@@ -178,7 +178,7 @@
                 v-if="chartPoints1.length > 1"
                 :points="chartPoints1.map(p => `${p.x},${p.y}`).join(' ')"
                 fill="none"
-                stroke="#FF6B1A"
+                stroke="#a78bfa"
                 stroke-width="2"
                 stroke-linecap="round"
                 stroke-linejoin="round"
@@ -188,7 +188,7 @@
                 v-if="chartPoints2.length > 1"
                 :points="chartPoints2.map(p => `${p.x},${p.y}`).join(' ')"
                 fill="none"
-                stroke="#43C165"
+                stroke="#c4b5fd"
                 stroke-width="2"
                 stroke-linecap="round"
                 stroke-linejoin="round"
@@ -198,14 +198,14 @@
                 v-for="p in chartPoints1"
                 :key="'a'+p.round"
                 :cx="p.x" :cy="p.y" r="3"
-                fill="#FF6B1A"
+                fill="#a78bfa"
               />
               <!-- Dots Sim B -->
               <circle
                 v-for="p in chartPoints2"
                 :key="'b'+p.round"
                 :cx="p.x" :cy="p.y" r="3"
-                fill="#43C165"
+                fill="#c4b5fd"
               />
             </svg>
             <div class="chart-legend">
@@ -228,7 +228,7 @@
               <div v-for="m in data.sim1.markets" :key="m.market_id" class="market-row">
                 <span class="market-id">{{ $tr('Market', '市场') }} {{ m.market_id }}</span>
                 <div class="market-bar-wrap">
-                  <div class="market-bar" :style="{ width: (m.price_yes * 100) + '%', background: '#FF6B1A' }"></div>
+                  <div class="market-bar" :style="{ width: (m.price_yes * 100) + '%', background: '#a78bfa' }"></div>
                 </div>
                 <span class="market-price">{{ (m.price_yes * 100).toFixed(1) }}% {{ $tr('YES', '是') }}</span>
               </div>
@@ -238,7 +238,7 @@
               <div v-for="m in data.sim2.markets" :key="m.market_id" class="market-row">
                 <span class="market-id">{{ $tr('Market', '市场') }} {{ m.market_id }}</span>
                 <div class="market-bar-wrap">
-                  <div class="market-bar" :style="{ width: (m.price_yes * 100) + '%', background: '#43C165' }"></div>
+                  <div class="market-bar" :style="{ width: (m.price_yes * 100) + '%', background: '#c4b5fd' }"></div>
                 </div>
                 <span class="market-price">{{ (m.price_yes * 100).toFixed(1) }}% {{ $tr('YES', '是') }}</span>
               </div>
@@ -422,9 +422,12 @@ const downloadComparison = () => {
 <style scoped>
 .comparison-page {
   min-height: 100vh;
-  background: #0A0A0A;
-  color: #FAFAFA;
-  font-family: 'Space Mono', monospace;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(139,92,246,0.18) 0%, transparent 55%),
+    radial-gradient(circle at 82% 88%, rgba(76,29,149,0.22) 0%, transparent 60%),
+    linear-gradient(180deg, #05030a 0%, #0a0518 100%);
+  color: #f4f1ff;
+  font-family: 'Geist Mono', ui-monospace, monospace;
 }
 
 .cmp-header {
@@ -432,34 +435,44 @@ const downloadComparison = () => {
   align-items: center;
   justify-content: space-between;
   padding: 16px 32px;
-  border-bottom: 1px solid #1E1E1E;
+  border-bottom: 1px solid rgba(167,139,250,0.16);
+  background: linear-gradient(180deg, rgba(20,14,42,0.85) 0%, rgba(8,5,20,0.92) 100%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 .brand {
-  font-family: 'Young Serif', serif;
+  font-family: 'Geist', system-ui, sans-serif;
+  font-weight: 800;
   font-size: 18px;
-  color: #FF6B1A;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #ffffff 0%, #e4ddff 45%, #c4b5fd 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
   cursor: pointer;
 }
 .page-tag {
-  font-size: 12px;
-  color: #666;
+  font-size: 11px;
+  color: rgba(228,222,255,0.55);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.18em;
 }
 .download-btn {
   padding: 7px 16px;
-  border: 1px solid #3A3A3A;
-  background: transparent;
-  color: #ccc;
-  border-radius: 4px;
+  border: 1px solid rgba(167,139,250,0.22);
+  background: linear-gradient(180deg, rgba(40,30,70,0.55) 0%, rgba(18,12,38,0.85) 100%);
+  color: rgba(228,222,255,0.85);
+  border-radius: 9999px;
   cursor: pointer;
   font-size: 12px;
   font-family: inherit;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
   transition: all 0.15s;
 }
 .download-btn:hover {
-  border-color: #FF6B1A;
-  color: #FF6B1A;
+  border-color: #a78bfa;
+  color: #a78bfa;
 }
 
 /* Selector Bar */
@@ -468,8 +481,8 @@ const downloadComparison = () => {
   align-items: flex-end;
   gap: 16px;
   padding: 20px 32px;
-  border-bottom: 1px solid #1A1A1A;
-  background: #0D0D0D;
+  border-bottom: 1px solid rgba(167,139,250,0.16);
+  background: linear-gradient(180deg, rgba(20,14,42,0.6) 0%, rgba(8,5,20,0.85) 100%);
 }
 .selector-group {
   display: flex;
@@ -479,49 +492,74 @@ const downloadComparison = () => {
 }
 .selector-label {
   font-size: 11px;
-  color: #666;
+  color: rgba(228,222,255,0.55);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.18em;
 }
 .sim-select {
-  padding: 8px 12px;
-  background: #151515;
-  border: 1px solid #2A2A2A;
-  color: #ccc;
-  border-radius: 4px;
-  font-family: 'Space Mono', monospace;
+  padding: 10px 14px;
+  background: linear-gradient(180deg, rgba(40,30,70,0.55) 0%, rgba(18,12,38,0.85) 100%);
+  border: 1px solid rgba(167,139,250,0.18);
+  color: #f4f1ff;
+  border-radius: 10px;
+  font-family: 'Geist Mono', ui-monospace, monospace;
   font-size: 12px;
   cursor: pointer;
   width: 100%;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(228,222,255,0.6) 50%),
+    linear-gradient(135deg, rgba(228,222,255,0.6) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 12px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 32px;
+}
+.sim-select option {
+  background: #0a0518;
+  color: #f4f1ff;
 }
 .sim-select:focus {
   outline: none;
-  border-color: #FF6B1A;
+  border-color: rgba(167,139,250,0.55);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 0 0 3px rgba(167,139,250,0.18);
 }
 .vs-badge {
-  padding: 8px 14px;
-  border: 1px solid #3A3A3A;
-  border-radius: 4px;
-  color: #555;
+  padding: 10px 16px;
+  border: 1px solid rgba(167,139,250,0.22);
+  background: linear-gradient(180deg, rgba(40,30,70,0.55) 0%, rgba(18,12,38,0.85) 100%);
+  border-radius: 9999px;
+  color: rgba(196,181,253,0.85);
   font-size: 11px;
-  font-weight: bold;
-  letter-spacing: 0.1em;
+  font-weight: 700;
+  letter-spacing: 0.2em;
   flex-shrink: 0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
 }
 .compare-btn {
-  padding: 9px 24px;
-  background: #FF6B1A;
-  color: #fff;
-  border: none;
-  border-radius: 4px;
+  padding: 10px 26px;
+  background: linear-gradient(180deg, rgba(167,139,250,0.55) 0%, rgba(76,29,149,0.75) 100%);
+  color: #ffffff;
+  border: 1px solid rgba(167,139,250,0.55);
+  border-radius: 9999px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
   font-family: inherit;
   display: flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  transition: opacity 0.15s;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 8px 22px -10px rgba(139,92,246,0.7);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s;
+}
+.compare-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.25), 0 12px 28px -10px rgba(139,92,246,0.8);
 }
 .compare-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -548,7 +586,7 @@ const downloadComparison = () => {
   width: 36px;
   height: 36px;
   border: 3px solid #2A2A2A;
-  border-top-color: #FF6B1A;
+  border-top-color: #a78bfa;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -583,9 +621,9 @@ const downloadComparison = () => {
   font-size: 28px;
   font-weight: bold;
 }
-.divergence-score.low { color: #43C165; }
+.divergence-score.low { color: #c4b5fd; }
 .divergence-score.medium { color: #FFB347; }
-.divergence-score.high { color: #FF6B1A; }
+.divergence-score.high { color: #a78bfa; }
 .divergence-desc { font-size: 12px; color: #888; max-width: 400px; line-height: 1.5; }
 
 /* Metrics Row */
@@ -600,12 +638,12 @@ const downloadComparison = () => {
   border: 1px solid #2A2A2A;
   border-radius: 8px;
 }
-.metric-card.sim-a { border-top: 3px solid #FF6B1A; }
-.metric-card.sim-b { border-top: 3px solid #43C165; }
+.metric-card.sim-a { border-top: 3px solid #a78bfa; }
+.metric-card.sim-b { border-top: 3px solid #c4b5fd; }
 .metric-sim-id { font-size: 11px; color: #555; margin-bottom: 12px; font-family: 'Space Mono', monospace; }
 .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .metric-item { display: flex; flex-direction: column; gap: 4px; }
-.metric-val { font-size: 20px; color: #FAFAFA; font-weight: bold; }
+.metric-val { font-size: 20px; color: #110a26; font-weight: bold; }
 .metric-lbl { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.08em; }
 
 /* Two-column layout */
@@ -639,8 +677,8 @@ const downloadComparison = () => {
 .lb-name { color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-score { color: #888; text-align: right; font-size: 11px; }
 .lb-delta { font-size: 10px; text-align: center; font-weight: bold; }
-.delta-up { color: #43C165; }
-.delta-down { color: #FF6B1A; }
+.delta-up { color: #c4b5fd; }
+.delta-down { color: #a78bfa; }
 .delta-equal { color: #555; }
 .lb-empty { color: #444; font-size: 12px; padding: 12px 0; }
 
@@ -656,8 +694,8 @@ const downloadComparison = () => {
 .chart-legend { display: flex; gap: 20px; font-size: 11px; color: #666; }
 .legend-item { }
 .legend-label { color: #444; margin-left: auto; }
-.sim-a-color { color: #FF6B1A; }
-.sim-b-color { color: #43C165; }
+.sim-a-color { color: #a78bfa; }
+.sim-b-color { color: #c4b5fd; }
 
 /* Markets */
 .markets-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }

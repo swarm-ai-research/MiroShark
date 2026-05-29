@@ -230,7 +230,11 @@ onMounted(() => {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #FAFAFA;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(139,92,246,0.18) 0%, transparent 55%),
+    radial-gradient(circle at 82% 88%, rgba(76,29,149,0.22) 0%, transparent 60%),
+    linear-gradient(180deg, #05030a 0%, #0a0518 100%);
+  color: #f4f1ff;
   overflow: hidden;
   font-family: var(--font-display);
 }
@@ -238,14 +242,18 @@ onMounted(() => {
 /* Header */
 .app-header {
   height: 60px;
-  border-bottom: 2px solid rgba(10,10,10,0.08);
+  border-bottom: 1px solid rgba(167,139,250,0.16);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 22px;
-  background: #0A0A0A;
+  background: linear-gradient(180deg, rgba(20,14,42,0.85) 0%, rgba(8,5,20,0.92) 100%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #f4f1ff;
   z-index: 100;
   position: relative;
+  box-shadow: inset 0 -1px 0 rgba(255,255,255,0.04), 0 8px 32px -16px rgba(0,0,0,0.6);
 }
 
 .header-center {
@@ -261,34 +269,44 @@ onMounted(() => {
   letter-spacing: 3px;
   text-transform: uppercase;
   cursor: pointer;
-  color: #FAFAFA;
+  background: linear-gradient(180deg, #ffffff 0%, #e4ddff 45%, #c4b5fd 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .view-switcher {
   display: flex;
-  background: rgba(250,250,250,0.08);
+  background: linear-gradient(180deg, rgba(40,30,70,0.55) 0%, rgba(18,12,38,0.75) 100%);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 9999px;
   padding: 4px;
-  gap: 4px;
+  gap: 2px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
 }
 
 .switch-btn {
-  border: 2px solid transparent;
+  border: 1px solid transparent;
   background: transparent;
-  padding: 6px 16px;
+  padding: 6px 14px;
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 3px;
-  color: rgba(250,250,250,0.5);
+  letter-spacing: 2px;
+  color: rgba(228,222,255,0.55);
   cursor: pointer;
-  transition: all 0.2s;
+  border-radius: 9999px;
+  transition: color 180ms ease, background 180ms ease;
 }
+.switch-btn:hover { color: #ffffff; }
 
 .switch-btn.active {
-  background: #0A0A0A;
-  color: #FAFAFA;
-  border: 2px solid #FF6B1A;
+  background: linear-gradient(180deg, rgba(167,139,250,0.35) 0%, rgba(76,29,149,0.55) 100%);
+  color: #ffffff;
+  border: 1px solid rgba(167,139,250,0.55);
+  border-radius: 9999px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 6px 16px -10px rgba(139,92,246,0.7);
 }
 
 .header-right {
@@ -307,12 +325,16 @@ onMounted(() => {
 .step-num {
   font-family: var(--font-mono);
   font-weight: 700;
-  color: rgba(250,250,250,0.4);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(196,181,253,0.65);
 }
 
 .step-name {
-  font-weight: 700;
-  color: #FAFAFA;
+  font-weight: 600;
+  font-size: 13px;
+  color: #f4f1ff;
 }
 
 .step-divider {
@@ -340,9 +362,9 @@ onMounted(() => {
   background: rgba(250,250,250,0.2);
 }
 
-.status-indicator.ready .dot { background: #43C165; }
-.status-indicator.processing .dot { background: #FF6B1A; animation: pulse 1s infinite; }
-.status-indicator.completed .dot { background: #43C165; }
+.status-indicator.ready .dot { background: #c4b5fd; }
+.status-indicator.processing .dot { background: #a78bfa; animation: pulse 1s infinite; }
+.status-indicator.completed .dot { background: #c4b5fd; }
 .status-indicator.idle .dot { background: #FFB347; }
 .status-indicator.error .dot { background: #FF4444; }
 

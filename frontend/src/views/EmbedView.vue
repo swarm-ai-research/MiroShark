@@ -286,16 +286,16 @@ onMounted(() => {
 <style scoped>
 .embed-widget {
   --bg: #ffffff;
-  --fg: #0a0a0a;
+  --fg: #f4f1ff;
   --muted: #6b6b6b;
   --border: rgba(10, 10, 10, 0.08);
   --pill-bg: rgba(10, 10, 10, 0.05);
-  --pill-fg: #0a0a0a;
+  --pill-fg: #f4f1ff;
   --bullish: #0ea5a0;
   --neutral: #9aa0a6;
   --bearish: #f07867;
   --consensus-line: rgba(10, 10, 10, 0.45);
-  --link-color: #ea580c;
+  --link-color: #a78bfa;
 
   box-sizing: border-box;
   width: 100%;

@@ -29,7 +29,7 @@
 > Drop in anything — a press release, a news headline, a policy draft, a question you can't answer, a historical what-if — and MiroShark spawns hundreds of agents that react to it hour by hour. Posting, arguing, trading, changing their minds.
 
 <p align="center">
-  <img src="./docs/images/simulate-anything.jpg" alt="Simulate anything — $1 per simulation, 10 min first result, 100 agents: input → build world → swarm → report" width="100%" />
+  <img src="./docs/images/simulate-anything-hero.png" alt="Simulate anything — $1 per simulation, 10 min first result, 100 agents: input → build world → swarm → report" width="100%" />
 </p>
 
 ### What it does
@@ -151,12 +151,12 @@ Each feature is documented in **[docs/FEATURES.md](docs/FEATURES.md)**.
 <div align="center">
 <table>
 <tr>
-<td><img src="./docs/images/diagram1.jpg" alt="Diagram 1" width="100%"/></td>
-<td><img src="./docs/images/diagram2.jpg" alt="Diagram 2" width="100%"/></td>
+<td><img src="./docs/images/simulation-phases.png" alt="Diagram 1" width="100%"/></td>
+<td><img src="./docs/images/cross-platform-dynamics.png" alt="Diagram 2" width="100%"/></td>
 </tr>
 <tr>
-<td><img src="./docs/images/grounding.jpg" alt="Five layers of grounding per agent: demographic seed, web enrichment, semantic search, relationships, graph attributes" width="100%"/></td>
-<td><img src="./docs/images/graph-memory.jpg" alt="Graph memory pipeline: ingestion (NER, embed, entity resolution, contradiction check, temporal edges) and retrieval (vector + BM25 + BFS, fused, reranked)" width="100%"/></td>
+<td><img src="./docs/images/agent-grounding.png" alt="Five layers of grounding per agent: demographic seed, web enrichment, semantic search, relationships, graph attributes" width="100%"/></td>
+<td><img src="./docs/images/graph-memory-pipeline.png" alt="Graph memory pipeline: ingestion (NER, embed, entity resolution, contradiction check, temporal edges) and retrieval (vector + BM25 + BFS, fused, reranked)" width="100%"/></td>
 </tr>
 </table>
 </div>

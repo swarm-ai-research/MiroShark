@@ -1033,6 +1033,107 @@
               </div>
             </div>
 
+            <!-- Agent roster (agents.json) — the participants surface.
+                 Sparklines above show *how* each agent's belief moved;
+                 this section shows *who they were*. Name + username +
+                 bio + persona preview + demographics + final stance
+                 derived from the same trajectory.json the sparklines
+                 read, so the ±0.2 stance bucket here matches the
+                 sparkline's color. Researchers comparing pool
+                 composition across runs read this surface; AntFleet
+                 benchmark jobs cross-reference agent personas with
+                 outcome quality. Same publish gate + pure-stdlib
+                 derivation as every other surface; zero new deps. -->
+            <div class="transcript-section signal-section agents-section">
+              <div class="transcript-head">
+                <span class="transcript-icon">🧑‍🤝‍🧑</span>
+                <div class="transcript-head-body">
+                  <div class="transcript-title">
+                    {{ $tr('Agent roster (JSON)', '智能体名册(JSON)') }}
+                    <span v-if="agentsPayload" class="signal-direction-badge signal-direction-bullish">
+                      {{ agentsPayload.agent_count }} {{ $tr('participants', '位参与者') }}
+                    </span>
+                  </div>
+                  <div class="transcript-sub">
+                    {{ $tr('Per-agent identity export — name, username, bio, persona preview, demographics (age / country / profession / mbti / interested topics), karma, plus final stance and rounds participated. The participants companion to sparklines (which show belief trajectories): this surface answers who was in the debate. Persona is previewed to 280 chars; full text remains in transcript.md.', '单智能体身份导出 — 姓名、用户名、简介、persona 预览、人口属性(年龄 / 国家 / 职业 / mbti / 关注话题)、karma,加上最终立场与参与回合数。迷你趋势图的参与者侧补充(迷你趋势图展示信念轨迹):此界面回答“辩论中有谁”。Persona 预览截至 280 字符;完整文本保留在 transcript.md。') }}
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="isPublic && agentsPayload && agentsPayload.agents.length" class="agents-list">
+                <div
+                  v-for="agent in agentsPayload.agents.slice(0, 12)"
+                  :key="agent.agent_id"
+                  class="agent-row"
+                >
+                  <div class="agent-row-head">
+                    <span class="agent-name" :title="agent.name">{{ agent.name }}</span>
+                    <span
+                      v-if="agent.username"
+                      class="agent-handle"
+                    >@{{ agent.username }}</span>
+                    <span
+                      class="agent-stance-chip"
+                      :style="{ color: agentStanceColor(agent.final_stance) }"
+                    >{{ agent.final_stance }}</span>
+                  </div>
+                  <div v-if="agentDemographicTags(agent).length" class="agent-tags">
+                    <span
+                      v-for="(tag, i) in agentDemographicTags(agent)"
+                      :key="i"
+                      class="agent-tag"
+                    >{{ tag }}</span>
+                  </div>
+                  <div v-if="agent.persona_preview" class="agent-persona">
+                    {{ agent.persona_preview }}
+                  </div>
+                </div>
+                <div v-if="agentsPayload.agents.length > 12" class="agents-overflow-note">
+                  {{ $tr('Showing top 12 by final stance — full roster in the JSON payload.', '按最终立场显示前 12 位 — 完整名册见 JSON。') }}
+                </div>
+                <div v-if="!agentsPayload.has_trajectory_data" class="sparkline-note">
+                  {{ $tr('No trajectory data yet — every agent shows the profile-only neutral default.', '尚无轨迹数据 — 每位智能体显示仅画像的中性默认值。') }}
+                </div>
+              </div>
+              <div v-else-if="isPublic && agentsLoading" class="signal-loading">
+                {{ $tr('Loading agent roster…', '加载智能体名册中…') }}
+              </div>
+              <div v-else-if="isPublic && agentsError" class="signal-empty">
+                {{ agentsError }}
+              </div>
+              <div v-else-if="!isPublic" class="signal-empty">
+                {{ $tr('Publish the simulation to enable the agent roster.', '发布模拟以启用智能体名册。') }}
+              </div>
+
+              <div class="snippet-block transcript-snippet">
+                <div class="snippet-head">
+                  <span class="snippet-label">{{ $tr('Agents JSON URL', '智能体 JSON URL') }}</span>
+                  <button
+                    class="snippet-copy-btn"
+                    @click="copy('agentsUrl')"
+                    :disabled="!isPublic"
+                  >
+                    {{ copied === 'agentsUrl' ? '✓ ' + $tr('Copied', '已复制') : $tr('Copy URL', '复制 URL') }}
+                  </button>
+                </div>
+                <pre class="snippet-code"><code>{{ agentsJsonUrl || '—' }}</code></pre>
+              </div>
+
+              <div class="snippet-block transcript-snippet">
+                <div class="snippet-head">
+                  <span class="snippet-label">{{ $tr('curl snippet', 'curl 片段') }}</span>
+                  <button
+                    class="snippet-copy-btn"
+                    @click="copy('agentsCurl')"
+                    :disabled="!isPublic"
+                  >
+                    {{ copied === 'agentsCurl' ? '✓ ' + $tr('Copied', '已复制') : $tr('Copy snippet', '复制代码片段') }}
+                  </button>
+                </div>
+                <pre class="snippet-code"><code>{{ agentsCurlSnippet }}</code></pre>
+              </div>
+            </div>
+
             <!-- Polymarket-shaped prediction JSON — the first share
                  surface adapted for a specific external integrator
                  (a Polymarket trading bot). Reshapes the signal.json
@@ -2733,6 +2834,8 @@ import {
   getVolatility,
   getAgentSparklinesUrl,
   getAgentSparklines,
+  getAgentsJsonUrl,
+  getAgentsJson,
   getPolymarketJsonUrl,
   getPolymarketJson,
   getCloneJsonUrl,
@@ -3266,6 +3369,75 @@ const loadAgentSparklines = async () => {
     sparklinesError.value = err?.message || tr('Agent sparklines fetch failed', '单智能体迷你趋势图获取失败')
   } finally {
     sparklinesLoading.value = false
+  }
+}
+
+// ── Agent roster (agents.json) state ──────────────────────────────────
+// The participants surface — agent identity / persona preview / demographics
+// + final stance + rounds participated. Same publish gate; 404 means
+// "no profile data on disk yet". Distinct from sparklines (per-round
+// belief trajectories) — this exposes *who was in the debate*.
+
+const agentsPayload = ref(null)
+const agentsLoading = ref(false)
+const agentsError = ref('')
+
+const agentsJsonUrl = computed(() => {
+  if (!props.simulationId || !origin.value) return ''
+  return getAgentsJsonUrl(props.simulationId, origin.value)
+})
+
+const agentsCurlSnippet = computed(() => {
+  const url = agentsJsonUrl.value || 'https://your-host/api/simulation/<id>/agents.json'
+  return `curl -s "${url}" | jq '.agents[] | {name, profession, final_stance}'`
+})
+
+// Render the agent's compact demographic chip — small tags shown next to
+// the name. Empty fields are omitted so an agent missing one of the
+// optional fields doesn't render an empty chip.
+const agentDemographicTags = (agent) => {
+  if (!agent || typeof agent !== 'object') return []
+  const tags = []
+  if (agent.profession) tags.push(agent.profession)
+  if (agent.country) tags.push(agent.country)
+  if (typeof agent.age === 'number') tags.push(`${agent.age}`)
+  if (agent.mbti) tags.push(agent.mbti)
+  return tags
+}
+
+// Map a stance string to the canonical hex color used across every
+// other surface (chart_svg / badge_service / agent_sparklines_service).
+// Keeps the participant chip color identical to the agent's sparkline.
+const AGENT_STANCE_COLORS = {
+  bullish: '#22c55e',
+  neutral: '#6b7280',
+  bearish: '#ef4444',
+}
+const agentStanceColor = (stance) => AGENT_STANCE_COLORS[stance] || AGENT_STANCE_COLORS.neutral
+
+const loadAgentsJson = async () => {
+  if (!props.simulationId || !isPublic.value) {
+    agentsPayload.value = null
+    return
+  }
+  agentsLoading.value = true
+  agentsError.value = ''
+  try {
+    const payload = await getAgentsJson(props.simulationId)
+    if (payload && Array.isArray(payload.agents)) {
+      agentsPayload.value = payload
+    } else {
+      agentsPayload.value = null
+      agentsError.value = tr(
+        'Agent roster not available yet — the simulation has no profile data on disk.',
+        '尚无可用的智能体名册 — 模拟还没有磁盘上的画像数据。',
+      )
+    }
+  } catch (err) {
+    agentsPayload.value = null
+    agentsError.value = err?.message || tr('Agent roster fetch failed', '智能体名册获取失败')
+  } finally {
+    agentsLoading.value = false
   }
 }
 
@@ -4140,6 +4312,8 @@ const copy = async (which) => {
   else if (which === 'volatilityCurl') text = volatilityCurlSnippet.value
   else if (which === 'sparkUrl') text = agentSparklinesUrl.value
   else if (which === 'sparkCurl') text = sparklinesCurlSnippet.value
+  else if (which === 'agentsUrl') text = agentsJsonUrl.value
+  else if (which === 'agentsCurl') text = agentsCurlSnippet.value
   else if (which === 'polymarketUrl') text = polymarketJsonUrl.value
   else if (which === 'polymarketCurl') text = polymarketCurlSnippet.value
   else if (which === 'cloneUrl') text = cloneJsonUrl.value
@@ -4742,6 +4916,9 @@ watch(() => props.open, async (val) => {
   // Per-agent sparklines sit on the same publish gate; load alongside so
   // the agent-trajectory rows render without a manual refresh.
   loadAgentSparklines()
+  // Agent roster sits on the same publish gate; load alongside so the
+  // participants section renders without a manual refresh.
+  loadAgentsJson()
   // Polymarket prediction sits on the same gate as signal.json; load
   // alongside so the YES/NO preview row renders without a manual refresh.
   loadPolymarket()
@@ -4798,6 +4975,8 @@ watch(isPublic, () => {
   loadVolatility()
   // Same publish-gate flip applies to per-agent sparklines — re-fetch.
   loadAgentSparklines()
+  // Same publish-gate flip applies to the agent roster — re-fetch.
+  loadAgentsJson()
   // Polymarket prediction sits on the same gate; re-fetch alongside.
   loadPolymarket()
   // Same publish-gate flip applies to the clone payload — re-fetch so
@@ -5741,6 +5920,97 @@ watch(isPublic, () => {
   border-top: 1px solid rgba(255,255,255, 0.06);
   font-size: 12px;
   color: rgba(228,222,255,0.62);
+  font-style: italic;
+}
+
+/* Agent roster — the participants surface. Vertical list of agent
+   cards, each with name + handle + stance chip on top, demographic
+   tags on a row, and a persona preview below. Capped height so a
+   50-agent swarm scrolls within the dialog instead of pushing the
+   snippet blocks off-screen. Sibling visual style to the sparklines
+   list above so the participant view reads as the identity layer of
+   the same agent set. */
+.agents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(255,255,255, 0.03);
+  border-radius: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.agent-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255, 0.05);
+}
+
+.agent-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.agent-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(244,241,255,0.92);
+}
+
+.agent-handle {
+  font-size: 12px;
+  color: rgba(228,222,255,0.55);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.agent-stance-chip {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.agent-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.agent-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  background: rgba(255,255,255, 0.06);
+  color: rgba(228,222,255,0.78);
+}
+
+.agent-persona {
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(228,222,255,0.72);
+  font-style: italic;
+}
+
+.agents-overflow-note {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255,255,255, 0.06);
+  font-size: 11px;
+  color: rgba(228,222,255,0.55);
   font-style: italic;
 }
 

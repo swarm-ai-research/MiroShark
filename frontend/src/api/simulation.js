@@ -947,6 +947,51 @@ export const getAgentSparklines = async (simulationId) => {
 }
 
 /**
+ * Build the absolute URL of the agent-roster JSON endpoint for a
+ * published simulation. The *participants* surface — the agent-level
+ * companion to `agents/sparklines` (per-agent belief *trajectories*).
+ * This endpoint exposes each agent's *identity*: name, username, bio,
+ * persona preview, demographics (age / gender / mbti / country /
+ * profession / interested_topics), karma, plus the final stance,
+ * final position, and rounds participated derived from the same
+ * `trajectory.json` the sparklines read.
+ *
+ * Same publish gate as every other share surface. Returns 404 when no
+ * profile data exists on disk yet.
+ *
+ * @param {string} simulationId
+ * @param {string} [origin]
+ * @returns {string}
+ */
+export const getAgentsJsonUrl = (simulationId, origin) => {
+  const base = origin || (typeof window !== 'undefined' ? window.location.origin : '')
+  return `${base}/api/simulation/${simulationId}/agents.json`
+}
+
+/**
+ * Fetch the agent-roster payload for a published simulation.
+ *
+ * Returns the parsed JSON document on 200, `null` on 404 (no profile
+ * data yet) or 403 (sim not published), and throws on transport errors.
+ *
+ * @param {string} simulationId
+ * @returns {Promise<object|null>}
+ */
+export const getAgentsJson = async (simulationId) => {
+  const res = await fetch(getAgentsJsonUrl(simulationId), {
+    credentials: 'omit',
+    cache: 'no-store',
+  })
+  if (res.status === 403 || res.status === 404) {
+    return null
+  }
+  if (!res.ok) {
+    throw new Error(`agents.json fetch failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+/**
  * Build the absolute URL of the oEmbed provider endpoint for a published
  * simulation's share URL. The discovery half of the oEmbed 1.0 spec —
  * writing platforms (Notion, Ghost, Substack, WordPress) that find the

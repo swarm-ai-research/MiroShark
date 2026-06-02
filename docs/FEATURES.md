@@ -444,6 +444,59 @@ Same publish gate as every other share surface (`is_public=true`). Returns `404`
 
 The Embed dialog exposes a `🤖 Agent trajectories (JSON)` section beneath the peak-round row: a scrollable list of agents, each a name chip + an inline SVG sparkline (belief position over rounds, stroked in the agent's stance color) + the final-stance label, plus a copyable URL and a paste-ready `curl` snippet. The `agent_sparklines` counter joins the surface-stats schema so an operator can see how often the agent-level view is pulled.
 
+## Agent Persona Export (Roster)
+
+`agents/sparklines` shows *how* each agent's belief moved over rounds. The roster surface shows *who they were*. Every published sim's agent identities have been locked in `transcript.md` headings — a researcher comparing pool composition across runs (*"did the financial-analyst-heavy sim converge faster than the retail-trader-heavy one?"*) had to regex through Markdown to extract them. `GET /api/simulation/<id>/agents.json` exposes the same identities as a structured JSON array: the participants companion to the sparklines trajectory companion.
+
+Returns a stable v1-schema JSON document:
+
+```json
+{
+  "schema_version": "1",
+  "simulation_id": "<sim_id>",
+  "scenario_preview": "Will Aave's reserve factor doubling reduce TVL?",
+  "agent_count": 24,
+  "has_trajectory_data": true,
+  "agents": [
+    {
+      "agent_id": 7,
+      "username": "skeptical_quant",
+      "name": "Skeptical Quant",
+      "bio": "Former options market-maker, now risk-curious about DeFi yields.",
+      "persona_preview": "Treats every yield claim as a vol surface puzzle. Reads on-chain flow during EU hours; takes tail-risk seriously…",
+      "age": 38,
+      "gender": "non-binary",
+      "mbti": "INTJ",
+      "country": "Switzerland",
+      "profession": "Quant Researcher",
+      "interested_topics": ["defi", "options", "risk"],
+      "karma": 4200,
+      "created_at": "2026-06-01",
+      "final_stance": "bullish",
+      "final_position": 0.612,
+      "rounds_participated": 12
+    }
+  ]
+}
+```
+
+- **`agents`** — one entry per profile row, ordered most-bullish-first by `final_position` (ties broken by `agent_id` ascending), with profile-only agents (no belief data) at the bottom so the participants who drove the consensus surface first.
+- **`username` / `name`** — from `reddit_profiles.json` (then `polymarket_profiles.json` as a secondary source — reddit wins on duplicate `user_id`). An agent with no profile row falls back to `name="Agent <id>"`, `username=""`.
+- **`persona_preview`** — full persona text truncated to 280 chars with a trailing ellipsis. The complete prose remains in `transcript.md` for callers who need it; the preview keeps multi-agent payloads tractable for research scripts pulling 50 agents.
+- **`bio`** — truncated to 280 chars (defensive cap for hand-edited profiles); same ellipsis posture.
+- **Demographics** — `age` (int|null), `gender` / `mbti` / `country` / `profession` (str|null), `interested_topics` (deduplicated list of trimmed strings, order preserved). Missing optional fields fall back to `null` / `[]` so the JSON consumer sees a fixed key set across agents.
+- **`final_stance` / `final_position` / `rounds_participated`** — derived from `trajectory.json` via the same `agent_sparklines_service` belief layer, so the ±0.2 stance threshold here is the same one the badge, transcript, and sparkline color use. A profile-only agent (no entry in any snapshot's `belief_positions`) gets `final_stance="neutral"`, `final_position=null`, `rounds_participated=0` — the participant surface answers *who was here*, not *did they say anything*.
+- **`has_trajectory_data`** — `true` when any agent has a non-null `final_position`; `false` when every agent is profile-only (a mid-prepare sim with profiles but no rounds yet).
+- **`scenario_preview`** — `simulation_requirement` truncated to 200 chars, echoed at the envelope level so a downstream tool can render "roster of sim X on scenario Y" without a second round-trip to embed-summary.
+
+Pure stdlib (`json` + `os`); `agent_export.py` reuses `agent_sparklines_service.load_agent_trajectories` for the belief layer and the same `_load_profile_names` lookup the transcript renderer uses — two surfaces, one source of truth for both identities and stances.
+
+Same publish gate as every other share surface (`is_public=true`). Returns `404` when no profile file exists yet (mid-prepare) — distinguishing a "not ready" sim (404) from a "private" one (403). Cached for 1 hour — the roster is structural (agent identities don't shift round-to-round), matching the `clone.json` cadence rather than the 5-minute analytical surfaces.
+
+The Embed dialog exposes a `🧑‍🤝‍🧑 Agent roster (JSON)` section beneath the trajectories row: each agent rendered as a name + handle + final-stance chip, demographic tag row, and a persona preview, with a copyable URL and a paste-ready `curl` snippet. The roster view caps at 12 agents inline (full list is in the JSON payload) so the dialog stays scannable on a 50-agent swarm. The `agents_json` counter joins the surface-stats schema so an operator can see how often the participants view is pulled independently of the trajectory view.
+
+Closes the participant-data gap left by the analytical surfaces — `agents/sparklines` for *belief trajectories*, `agents.json` for *agent identities*. Together they're the per-agent layer the per-sim analytical primitives describe at the swarm level.
+
 ## Polymarket-Ready Prediction JSON
 
 The first share surface adapted for a specific external integrator. `signal.json` emits a generic action primitive (`direction` + `confidence_pct` + `risk_tier`); `GET /api/simulation/<id>/polymarket.json` re-shapes that primitive into the binary YES / NO probability envelope a Polymarket trading bot expects between *"simulation result"* and *"actionable market signal"*.

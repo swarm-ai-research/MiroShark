@@ -324,7 +324,7 @@ _CATALOG: List[Dict[str, Any]] = [
         "method": "GET",
         "type": "export",
         "description": "Agent roster — per-agent identity, persona preview, demographics + final stance. The participants surface.",
-        "added_in_pr": 135,
+        "added_in_pr": 137,
         "example_curl": "curl -fsSL 'https://your-host/api/simulation/<simulation_id>/agents.json'",
     },
     # ── Platform-level surfaces ─────────────────────────────────────

@@ -5917,6 +5917,100 @@ def get_clone_json(simulation_id: str):
         }), 500
 
 
+@simulation_bp.route('/<simulation_id>/agents.json', methods=['GET'])
+def get_agents_json(simulation_id: str):
+    """Agent roster / persona export for a published simulation.
+
+    The participants surface. Every prior share endpoint describes what
+    the swarm concluded (``signal.json``, ``polymarket.json``,
+    ``volatility``) or how belief evolved (``chart.svg``, ``peak-round``,
+    ``agents/sparklines``, ``trajectory.csv``); none describe *who was in
+    the debate* in machine-readable form. The agent identities have been
+    locked in ``transcript.md`` headings — a researcher comparing pool
+    composition across runs ("did the financial-analyst-heavy sim
+    converge faster than the retail-trader-heavy one?") had to regex
+    through Markdown.
+
+    This endpoint exposes the same agent identities as a JSON array:
+    name + username + bio + persona preview + demographics
+    (age / gender / mbti / country / profession / interested_topics) +
+    karma, joined with each agent's final stance, final position, and
+    rounds participated from the same ``trajectory.json`` the per-agent
+    sparklines read. The ±0.2 stance threshold is shared so an agent
+    tagged ``bullish`` here is ``bullish`` in the transcript, the
+    sparkline, and the badge.
+
+    Persona prose is previewed to 280 chars to keep multi-agent payloads
+    tractable for research scripts (full text remains in
+    ``transcript.md``). Agents are ordered most-bullish-first by
+    ``final_position`` (ties broken by ``agent_id``) so a UI rendering
+    this side-by-side with ``agents/sparklines`` aligns row-for-row.
+
+    Same publish gate as every other share surface (``is_public=true``).
+    Returns ``404`` when no profile file exists yet so a consumer can
+    tell a "not ready" sim (404) apart from a "private" one (403).
+    Cached for 1 hour — the roster is structural (it doesn't shift round
+    to round), matching the cadence ``clone.json`` uses.
+    """
+    from ..services import agent_export
+    from ..services import surface_stats
+    from flask import Response
+
+    locale = get_locale(request)
+    try:
+        try:
+            summary = _build_embed_summary_payload(simulation_id)
+        except LookupError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 404
+
+        if not summary.get("is_public"):
+            return jsonify({
+                "success": False,
+                "error": _t(
+                    "Simulation is not published. POST /api/simulation/<id>/publish to enable.",
+                    "该模拟未发布,请通过 POST /api/simulation/<id>/publish 启用。",
+                    locale,
+                ),
+            }), 403
+
+        sim_dir = os.path.join(Config.WONDERWALL_SIMULATION_DATA_DIR, simulation_id)
+        payload = agent_export.build_agent_export(simulation_id, sim_dir)
+        if payload is None:
+            return jsonify({
+                "success": False,
+                "error": _t(
+                    "Agent roster not available yet — the simulation has no profile data on disk.",
+                    "尚无可用的智能体名册 — 模拟还没有磁盘上的画像数据。",
+                    locale,
+                ),
+            }), 404
+
+        # Pretty-printed + sorted keys so ``curl > agents.json`` produces
+        # a diff-friendly file. Matches the clone.json / peak-round /
+        # signal.json posture. ``ensure_ascii=False`` keeps non-ASCII
+        # persona text (CN/JP locales) readable rather than escaped.
+        body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        response = Response(body, mimetype="application/json; charset=utf-8")
+        # 1-hour cache — the roster is structural (agent identities don't
+        # change once a sim has reached its first round). Matches the
+        # clone.json cadence; longer than the analytical surfaces
+        # (peak-round / volatility / signal at 5 min) because the
+        # participant list doesn't shift round-to-round.
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        response.headers["Content-Disposition"] = (
+            f'inline; filename="miroshark-{simulation_id[:12]}-agents.json"'
+        )
+        surface_stats.increment_surface_stat(sim_dir, "agents_json")
+        return response
+
+    except Exception as e:
+        logger.error(f"agents.json: failed for {simulation_id}: {e}\n{traceback.format_exc()}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), 500
+
+
 @simulation_bp.route('/<simulation_id>/agents/sparklines', methods=['GET'])
 def get_agent_sparklines(simulation_id: str):
     """Per-agent belief sparklines for a published simulation.

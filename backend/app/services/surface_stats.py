@@ -101,6 +101,7 @@ SURFACE_KEYS: frozenset[str] = frozenset(
         "agent_sparklines",
         "volatility",
         "clone_json",
+        "agents_json",
     }
 )
 

@@ -1883,6 +1883,57 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/simulation/{simulation_id}/agents.json:
+    get:
+      tags: [Publish & Embed]
+      summary: Agent roster export — the *participants* surface.
+      description: |
+        Every prior share endpoint describes what the swarm concluded
+        (`signal.json`, `polymarket.json`, `volatility`) or how belief
+        evolved (`chart.svg`, `peak-round`, `agents/sparklines`,
+        `trajectory.csv`); none describe *who was in the debate* in
+        machine-readable form. Agent identities have been locked in
+        `transcript.md` Markdown headings — a researcher comparing pool
+        composition across runs had to regex through it.
+
+        This endpoint exposes the same identities as a JSON array. Each
+        agent's `name`, `username`, `bio`, `persona_preview`,
+        demographics (`age` / `gender` / `mbti` / `country` /
+        `profession` / `interested_topics`), `karma`, plus
+        `final_stance` / `final_position` / `rounds_participated`
+        derived from the same `trajectory.json` the per-agent
+        sparklines surface reads. The ±0.2 stance threshold is shared,
+        so an agent tagged `bullish` here is `bullish` in the
+        transcript and sparkline.
+
+        Persona prose is previewed to 280 chars to keep multi-agent
+        payloads tractable for research scripts (full text remains in
+        `transcript.md`). Agents are ordered most-bullish-first by
+        `final_position`; ties break on `agent_id` ascending; profile-
+        only agents (no belief data) sort to the bottom with
+        `final_stance="neutral"`, `final_position=null`,
+        `rounds_participated=0` — the participant surface answers *who
+        was here*, not *did they say anything*.
+
+        Same publish gate as every other share surface
+        (`is_public=true`). Returns `404` when no profile file exists
+        on disk yet, so a consumer can tell a "not ready" sim (404)
+        apart from a "private" one (403). Cached for 1 hour — the
+        roster is structural (it doesn't shift round-to-round),
+        matching the `clone.json` cadence rather than the 5-minute
+        analytical surfaces.
+      parameters:
+        - $ref: "#/components/parameters/SimulationIdPath"
+      responses:
+        "200":
+          description: Agent roster envelope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentsExportResponse"
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/simulation/{simulation_id}/agents/sparklines:
     get:
       tags: [Publish & Embed]
@@ -5623,6 +5674,165 @@ components:
           description: Per-round belief positions, sorted ascending by round.
           items:
             $ref: "#/components/schemas/SparklinePoint"
+
+    AgentExportEntry:
+      type: object
+      description: |
+        One agent's roster entry — identity (name, username, bio,
+        persona preview), demographics (age / gender / mbti / country /
+        profession / interested_topics), karma, plus the belief layer
+        derived from `trajectory.json` (final_stance / final_position /
+        rounds_participated). Profile-only agents (no entry in any
+        snapshot's `belief_positions`) appear with `final_stance="neutral"`,
+        `final_position=null`, `rounds_participated=0`.
+      required:
+        - agent_id
+        - username
+        - name
+        - bio
+        - persona_preview
+        - age
+        - gender
+        - mbti
+        - country
+        - profession
+        - interested_topics
+        - karma
+        - created_at
+        - final_stance
+        - final_position
+        - rounds_participated
+      properties:
+        agent_id:
+          type: integer
+          description: The agent's integer user id (matches the sparklines surface).
+        username:
+          type: string
+          description: |
+            Reddit-style handle from `reddit_profiles.json` (then
+            `polymarket_profiles.json`); empty string when no profile
+            row carries one.
+        name:
+          type: string
+          description: |
+            Display name from the same profile lookup; falls back to
+            `"Agent <id>"` when neither name nor username is set so a
+            roster row is never anonymous.
+        bio:
+          type: string
+          maxLength: 280
+          description: Profile bio, truncated to 280 chars with a trailing ellipsis.
+        persona_preview:
+          type: string
+          maxLength: 280
+          description: |
+            Persona prose truncated to 280 chars with a trailing
+            ellipsis. The full text remains in `transcript.md` for
+            callers who need it.
+        age:
+          type: integer
+          nullable: true
+          description: Optional numeric age; `null` when the profile generator did not populate it.
+        gender:
+          type: string
+          nullable: true
+          description: Optional gender label; `null` when blank.
+        mbti:
+          type: string
+          nullable: true
+          description: Optional MBTI archetype; `null` when blank.
+        country:
+          type: string
+          nullable: true
+          description: Optional country label; `null` when blank.
+        profession:
+          type: string
+          nullable: true
+          description: Optional profession label; `null` when blank.
+        interested_topics:
+          type: array
+          items:
+            type: string
+          description: |
+            Deduplicated, order-preserving list of interest tags from
+            the profile. Empty list when the profile has none or the
+            field was a non-list value.
+        karma:
+          type: integer
+          description: Reddit-style karma counter; defaults to `0` when absent from the profile.
+        created_at:
+          type: string
+          description: ISO-style date the profile was generated; empty string when absent.
+        final_stance:
+          type: string
+          enum: [bullish, neutral, bearish]
+          description: |
+            Stance bucket of the agent's last-round position under the
+            ±0.2 threshold every other surface uses. `"neutral"` for
+            profile-only agents.
+        final_position:
+          type: number
+          format: float
+          nullable: true
+          minimum: -1
+          maximum: 1
+          description: |
+            The agent's scalar belief position in the final round,
+            rounded to three decimals. `null` for profile-only agents.
+        rounds_participated:
+          type: integer
+          minimum: 0
+          description: |
+            Number of distinct rounds where this agent held a usable
+            belief position. `0` for profile-only agents.
+
+    AgentsExportResponse:
+      type: object
+      description: |
+        Agent roster envelope returned by
+        `/api/simulation/{id}/agents.json`. The participants surface —
+        per-agent identity + demographics + final stance, sibling of
+        `/agents/sparklines` (which exposes per-round trajectories).
+
+        Agents are ordered most-bullish-first by `final_position`
+        (ties broken by `agent_id` ascending); profile-only agents
+        (no belief data) sort to the bottom. Schema is versioned via
+        `schema_version`; v1 is the only published version.
+      required:
+        - schema_version
+        - simulation_id
+        - scenario_preview
+        - agent_count
+        - has_trajectory_data
+        - agents
+      properties:
+        schema_version:
+          type: string
+          enum: ["1"]
+          description: Schema version literal — bumped on breaking changes.
+        simulation_id:
+          type: string
+          description: Echoed simulation id.
+        scenario_preview:
+          type: string
+          maxLength: 200
+          description: |
+            `simulation_requirement` truncated to 200 chars with a
+            trailing ellipsis. Empty string when the config is missing.
+        agent_count:
+          type: integer
+          minimum: 1
+          description: Number of agents the roster lists.
+        has_trajectory_data:
+          type: boolean
+          description: |
+            `true` when any agent has a non-null `final_position`;
+            `false` when every agent is profile-only (mid-prepare sim
+            with profiles but no rounds yet).
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentExportEntry"
 
     AgentSparklinesResponse:
       type: object

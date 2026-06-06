@@ -59,6 +59,7 @@ Deep dive on every feature. One heading per feature, ordered roughly by when you
 | **Ecosystem JSON Registry** | `GET /api/ecosystem.json` — machine-readable list of every external project, agent, and product built on MiroShark; alphabetised, categorised, ETag-cached |
 | **Per-Project Simulation Statistics** | `GET /api/project/<project_id>/stats` — per-project sibling of `/api/stats`; same envelope filtered to one workspace + a `quality_distribution` bucket count |
 | **Platform Status Probe** | `GET /api/status.json` — *"is this MiroShark instance up and completing sims?"* for external status monitors (Upptime, BetterUptime, Statuspage); literal `ok: true` + `queue_depth` + `completed_24h` + `last_completed_at` + lifetime `total_sims` + catalog `surface_count` + ISO `check_at` |
+| **Multi-Sim Batch Status Lookup** | `POST /api/simulation/batch-status` — poll up to 20 sims in one call; per-id publish gate (private + unknown ids share the `found: false` shape); analytics fields (`direction` / `confidence_pct` / `quality_health` / `total_rounds`) emit only on completed sims; the N-to-1 replacement for polling `/api/simulation/<id>/run-status` per id |
 
 ## Smart Setup (Scenario Auto-Suggest)
 
@@ -816,6 +817,69 @@ The route deliberately does not maintain an in-process cache. The surface is mea
 Empty / missing `WONDERWALL_SIMULATION_DATA_DIR` returns a fully-zeroed envelope (still `200`, still `ok: true`, still well-formed) rather than a 404 — a fresh install probing itself should see a valid response, not an error. The `ok` flag is intentionally a *literal* `true` rather than a derived value: a future regression in the scan that materially degrades the probe should bubble up via the JSON envelope (or a 500) rather than silently flip the boolean. A downstream alert keyed on `ok` shouldn't decay into a no-op.
 
 Pure stdlib (`os` + `json` + `time` + `datetime`, ~240 LoC in `app/services/platform_status.py`); zero new dependencies — same posture as `platform_stats`, `project_stats`, and the rest of the platform-level surface modules. Mounted on a new `status_bp` blueprint at `/api/status.json` so the URL stays the short, well-known probe path a status-page template can drop in.
+
+## Multi-Sim Batch Status Lookup
+
+The per-sim run-status endpoint answers *"what is sim X doing right now?"* one sim at a time. An integrator running parallel batches — AntFleet's benchmark pipeline, Capacitr's polling loop, the rest of the ecosystem table running automated workflows — has to fire N HTTP requests to poll N sims. `POST /api/simulation/batch-status` collapses that to a single round-trip.
+
+```json
+{
+  "success": true,
+  "data": {
+    "schema_version": "1",
+    "count": 3,
+    "results": [
+      {
+        "sim_id": "sim_aaa111bbb222",
+        "found": true,
+        "status": "completed",
+        "current_round": 12,
+        "total_rounds": 12,
+        "direction": "Bullish",
+        "confidence_pct": 64.5,
+        "quality_health": "excellent",
+        "completed_at": "2026-06-05T18:42:11"
+      },
+      {
+        "sim_id": "sim_ccc333ddd444",
+        "found": true,
+        "status": "running",
+        "current_round": 7,
+        "total_rounds": null,
+        "direction": null,
+        "confidence_pct": null,
+        "quality_health": null,
+        "completed_at": null
+      },
+      {
+        "sim_id": "sim_private_or_ghost",
+        "found": false,
+        "status": null,
+        "current_round": null,
+        "total_rounds": null,
+        "direction": null,
+        "confidence_pct": null,
+        "quality_health": null,
+        "completed_at": null
+      }
+    ]
+  }
+}
+```
+
+Three semantic guarantees matter:
+
+- **Per-id publish gate.** A private sim in the batch returns `found: false` rather than leaking its analytics. An unknown sim id (typo, never existed) returns the *same* `found: false` envelope. A caller cannot distinguish private from non-existent by reading the response — the existence-of-a-private-sim signal is itself a leak the endpoint refuses to emit.
+- **Analytics only on completed sims.** Running, failed, and cancelled sims return the bare `status` + `null` analytics. A consumer rendering "❌ failed" or "⏳ running" badges must not also see a `direction` — the response doesn't pretend an in-flight run produced a usable signal. Completed sims carry the same `direction` / `confidence_pct` / `quality_health` / `total_rounds` the per-sim `signal.json` reports, derived byte-for-byte from the same `signal_service.compute_signal` helper.
+- **Order preserved, duplicates honored.** `results` is parallel to the input `sim_ids` so a caller can correlate by index. A duplicate id emits a duplicate entry — the surface treats the input as a list, not a set, so a polling loop that batches the same id twice gets the same answer twice and doesn't have to dedupe itself.
+
+The endpoint is unauthenticated — same posture as `/api/status.json` and `/api/openapi.json`, added to the `internal_auth_guard` allow-list. A polling endpoint that integrators hit on every batch tick cannot require the internal key.
+
+Input validation rejects malformed ids (`^[A-Za-z0-9_\-\.]{1,128}$`) at the API boundary so the disk read never sees an unsanitised value. The 20-id cap on `sim_ids` matches the `MAX_BATCH_SIZE` constant in `batch_status` — set tight enough that a runaway caller cannot trigger a 1 000-sim scan in one round-trip, loose enough that a researcher polling a benchmark batch never hits it in practice.
+
+`Cache-Control: no-store` — the response depends on live per-sim state, and a polling consumer asking the same question two seconds later expects fresh data. The route handler reads ≤20 small JSON files per request (state.json, plus trajectory.json + quality.json for any completed sims in the batch), so the worst-case scan is well under a single tick.
+
+Pure stdlib (`os` + `json` + `re`, ~350 LoC in `app/services/batch_status.py`); zero new dependencies — keeps the platform on its 40-PR zero-new-deps streak. Reuses `signal_service.compute_signal` so the signal math stays one place. The drift-test path mirrors `platform_status` / `project_stats`: a static catalog entry + a static OpenAPI guard + an auth-guard guard.
 
 ## BibTeX Academic Citation
 

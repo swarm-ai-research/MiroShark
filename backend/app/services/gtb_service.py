@@ -120,8 +120,9 @@ class GTBWorldService:
         self._epoch_metrics: List[GTBMetrics] = []
         self._action_overrides: Dict[str, GTBAction] = {}
         self._step_in_epoch = 0
-        from .gtb_markets import GTBMarketBook
+        from .gtb_markets import GTBMarketBook, GTBStakeBook
         self._market_book = GTBMarketBook()
+        self._stake_book = GTBStakeBook()
         self._batch_driver = None
         if self._batch_personas:
             from .gtb_llm_agent import BatchLLMDriver
@@ -147,6 +148,58 @@ class GTBWorldService:
         """Override the next-step action for one agent. Cleared after step()."""
         with self._lock:
             self._action_overrides[agent_id] = action
+
+    def _process_stakes_locked(self, actions: Dict[str, GTBAction]) -> List[Any]:
+        """Apply any stake intents piggy-backed on this tick's actions.
+
+        Returns a list of GTBEvent-shaped dicts (we synthesize them locally
+        rather than touching env's GTBEvent class)."""
+        from worlds.gather_trade_build.entities import GTBEvent
+        out: List[Any] = []
+        for agent_id, action in actions.items():
+            mid = (action.stake_market_id or "").strip()
+            side = (action.stake_side or "").strip().lower()
+            amount = float(action.stake_amount or 0.0)
+            if not mid or not side or amount <= 0:
+                continue
+            market = self._market_book.find_open(mid)
+            worker = self._env.workers.get(agent_id)
+            if market is None or worker is None:
+                out.append(GTBEvent(
+                    event_type="stake_rejected",
+                    epoch=self._env.current_epoch,
+                    step=self._step_in_epoch,
+                    agent_id=agent_id,
+                    details={"reason": "no_such_market", "market_id": mid},
+                ))
+                continue
+            coin = worker.inventory.get("coin", 0.0)
+            stake = self._stake_book.place(
+                agent_id=agent_id, market=market, side=side,
+                amount=amount, worker_coin=coin,
+                epoch=self._env.current_epoch,
+            )
+            if stake is None:
+                out.append(GTBEvent(
+                    event_type="stake_rejected",
+                    epoch=self._env.current_epoch,
+                    step=self._step_in_epoch,
+                    agent_id=agent_id,
+                    details={"reason": "invalid_or_insufficient_coin",
+                             "market_id": mid, "side": side, "amount": amount,
+                             "coin": coin},
+                ))
+                continue
+            # Escrow: debit the worker's coin now; payouts on resolve.
+            worker.inventory["coin"] = max(0.0, coin - amount)
+            out.append(GTBEvent(
+                event_type="stake_placed",
+                epoch=self._env.current_epoch,
+                step=self._step_in_epoch,
+                agent_id=agent_id,
+                details={"market_id": mid, "side": side, "amount": amount},
+            ))
+        return out
 
     def _obs_with_markets(self, agent_id: str) -> Dict[str, Any]:
         """Env obs + open markets, so LLM agents can reason about how
@@ -187,6 +240,8 @@ class GTBWorldService:
                     obs = self._obs_with_markets(agent_id)
                     actions[agent_id] = policy.decide(obs)
             events = self._env.apply_actions(actions)
+            stake_events = self._process_stakes_locked(actions)
+            events.extend(stake_events)
             self._action_overrides.clear()
             self._step_in_epoch += 1
             should_close = self._step_in_epoch >= self._steps_per_epoch
@@ -221,7 +276,15 @@ class GTBWorldService:
         metrics_dict = self._metrics_to_dict(metrics)
         # Resolve open markets and lazily seed new ones so there's
         # always something to bet on.
-        self._market_book.on_epoch_close(metrics.epoch, metrics_dict)
+        resolved = self._market_book.on_epoch_close(metrics.epoch, metrics_dict)
+        # Pay out stakes on every newly resolved market: credit the
+        # winning side's coin directly into worker inventories.
+        for m in resolved:
+            payouts = self._stake_book.distribute(m)
+            for agent_id, gross in payouts.items():
+                w = self._env.workers.get(agent_id)
+                if w is not None:
+                    w.inventory["coin"] = w.inventory.get("coin", 0.0) + gross
         if not self._market_book.open_markets:
             self._market_book.generate(metrics.epoch, metrics_dict)
         if self._planner.should_update(self._env.current_epoch):
@@ -288,6 +351,7 @@ class GTBWorldService:
                     self._metrics_to_dict(m) for m in self._epoch_metrics
                 ],
                 "markets": self._market_book.to_dict(),
+                "stakes": self._stake_book.to_dict(),
             }
 
     def generate_markets(self) -> List[Dict[str, Any]]:

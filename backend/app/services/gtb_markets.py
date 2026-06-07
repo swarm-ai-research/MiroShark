@@ -209,3 +209,138 @@ class GTBMarketBook:
             "open": [m.to_dict() for m in self._open],
             "resolved": [m.to_dict() for m in self._resolved],
         }
+
+    def find_open(self, market_id: str) -> Optional[Market]:
+        for m in self._open:
+            if m.market_id == market_id:
+                return m
+        return None
+
+
+@dataclass
+class Stake:
+    agent_id: str
+    market_id: str
+    side: str  # "yes" | "no"
+    amount: float
+    epoch: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class GTBStakeBook:
+    """YES/NO stakes against the market book.
+
+    Coin is deducted from the worker's inventory at place() time; on
+    market resolution, the losing side's pool is distributed pro-rata
+    to the winning side. Expired markets refund all stakes.
+    """
+
+    def __init__(self) -> None:
+        self._stakes: Dict[str, List[Stake]] = {}
+        self._history: List[Dict[str, Any]] = []  # placed + resolved events
+
+    def place(
+        self,
+        agent_id: str,
+        market: Market,
+        side: str,
+        amount: float,
+        worker_coin: float,
+        epoch: int,
+    ) -> Optional[Stake]:
+        """Record a stake if the worker has enough coin. Returns the Stake
+        on success, None if rejected. Caller is responsible for deducting
+        the coin from the worker's inventory."""
+        if market.status != "open":
+            return None
+        if side not in ("yes", "no"):
+            return None
+        if amount <= 0 or amount > worker_coin + 1e-9:
+            return None
+        stake = Stake(
+            agent_id=agent_id,
+            market_id=market.market_id,
+            side=side,
+            amount=float(amount),
+            epoch=epoch,
+        )
+        self._stakes.setdefault(market.market_id, []).append(stake)
+        self._history.append({
+            "event": "placed",
+            "epoch": epoch,
+            **stake.to_dict(),
+        })
+        return stake
+
+    def open_stakes(self) -> Dict[str, List[Stake]]:
+        return {k: list(v) for k, v in self._stakes.items()}
+
+    def distribute(self, market: Market) -> Dict[str, float]:
+        """Resolve stakes for one closed market. Returns
+        {agent_id: payout} (gross — includes the agent's own returned
+        principal on the winning side). Stakes for this market are
+        removed from the book."""
+        stakes = self._stakes.pop(market.market_id, [])
+        if not stakes:
+            return {}
+
+        # Expired / no resolution → refund principal.
+        if market.status not in ("yes", "no"):
+            payouts: Dict[str, float] = {}
+            for s in stakes:
+                payouts[s.agent_id] = payouts.get(s.agent_id, 0.0) + s.amount
+                self._history.append({
+                    "event": "refunded",
+                    "market_id": market.market_id,
+                    **s.to_dict(),
+                })
+            return payouts
+
+        winning_side = market.status  # "yes" | "no"
+        winners = [s for s in stakes if s.side == winning_side]
+        losers = [s for s in stakes if s.side != winning_side]
+        loser_pool = sum(s.amount for s in losers)
+        winner_pool = sum(s.amount for s in winners)
+
+        payouts: Dict[str, float] = {}
+        if not winners:
+            # No one took the winning side — refund losers.
+            for s in losers:
+                payouts[s.agent_id] = payouts.get(s.agent_id, 0.0) + s.amount
+                self._history.append({
+                    "event": "refunded_no_counterparty",
+                    "market_id": market.market_id,
+                    **s.to_dict(),
+                })
+            return payouts
+
+        for s in winners:
+            share = s.amount / winner_pool if winner_pool > 0 else 0.0
+            gross = s.amount + share * loser_pool
+            payouts[s.agent_id] = payouts.get(s.agent_id, 0.0) + gross
+            self._history.append({
+                "event": "won",
+                "market_id": market.market_id,
+                "winning_side": winning_side,
+                "gross_payout": gross,
+                **s.to_dict(),
+            })
+        for s in losers:
+            self._history.append({
+                "event": "lost",
+                "market_id": market.market_id,
+                "winning_side": winning_side,
+                **s.to_dict(),
+            })
+        return payouts
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "open_stakes": {
+                mid: [s.to_dict() for s in stakes]
+                for mid, stakes in self._stakes.items()
+            },
+            "history": list(self._history[-200:]),  # cap to recent
+        }

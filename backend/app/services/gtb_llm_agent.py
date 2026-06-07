@@ -31,6 +31,7 @@ _ACTION_SCHEMA_HINT = {
     "price": "coins per unit (for trade)",
     "shift_amount": "coins to defer (for shift_income)",
     "underreport_fraction": "0..1 (for misreport)",
+    "market_stake": "OPTIONAL {market_id, side: 'yes'|'no', amount: coins>0} — stake on an open market this tick. Coin is debited now; payouts arrive when the market resolves.",
 }
 
 
@@ -94,7 +95,12 @@ _MARKET_GUIDANCE = (
     "Building houses raises production + your income (and the Gini if you're "
     "already wealthy); gathering more raises welfare; misreporting lowers tax "
     "revenue. Pick the action whose effect on the metric stream best matches "
-    "your beliefs about which markets resolve YES."
+    "your beliefs about which markets resolve YES.\n"
+    "You can ALSO place a YES/NO stake on any open market in the same tick "
+    "via the optional `market_stake` field. Coin is debited immediately and "
+    "paid out (with the loser pool, pro-rata) when the market resolves. "
+    "Stake small fractions of your coin — losing the whole reserve makes "
+    "you uncompetitive next epoch."
 )
 
 
@@ -121,6 +127,14 @@ def _parse_action(agent_id: str, raw: Dict[str, Any]) -> GTBAction:
         except ValueError:
             resource_type = ResourceType.WOOD
 
+    stake = raw.get("market_stake") or {}
+    stake_market_id = str(stake.get("market_id") or "")
+    stake_side = str(stake.get("side") or "").lower()
+    try:
+        stake_amount = float(stake.get("amount") or 0.0)
+    except (TypeError, ValueError):
+        stake_amount = 0.0
+
     return GTBAction(
         agent_id=agent_id,
         action_type=action_type,
@@ -130,6 +144,9 @@ def _parse_action(agent_id: str, raw: Dict[str, Any]) -> GTBAction:
         price=float(raw.get("price") or 1.0),
         shift_amount=float(raw.get("shift_amount") or 0.0),
         underreport_fraction=float(raw.get("underreport_fraction") or 0.0),
+        stake_market_id=stake_market_id,
+        stake_side=stake_side,
+        stake_amount=stake_amount,
     )
 
 

@@ -52,6 +52,13 @@ class GTBAction:
     price: float = 1.0
     shift_amount: float = 0.0
     underreport_fraction: float = 0.0
+    # Optional side-channel: place a YES/NO stake on an open prediction
+    # market in the same tick. Env ignores these fields; the GTB world
+    # service intercepts them after apply_actions and updates a separate
+    # stake book. Keeps the env's invariants untouched.
+    stake_market_id: str = ""
+    stake_side: str = ""  # "" | "yes" | "no"
+    stake_amount: float = 0.0
 
 
 class GTBEnvironment:

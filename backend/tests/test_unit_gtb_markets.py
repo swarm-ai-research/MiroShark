@@ -135,6 +135,88 @@ class TestServiceIntegration:
         questions = [m["question"] for m in state["markets"]["open"]]
         assert any("welfare" in q or "Gini" in q for q in questions)
 
+    def test_stake_placed_debits_coin_and_payout_on_yes(self, gtb_mods):
+        service_mod, _ = gtb_mods
+        from worlds.gather_trade_build.config import GTBConfig
+        from worlds.gather_trade_build.env import GTBAction
+        from worlds.gather_trade_build.entities import GTBActionType
+
+        cfg = GTBConfig.from_dict({})
+        svc = service_mod.GTBWorldService(
+            config=cfg,
+            agent_specs=[{"policy": "honest", "count": 2}],
+            steps_per_epoch=1,
+            seed=21,
+        )
+        svc.step()  # epoch 0 closes, seeds markets
+        open_markets = svc.markets()["open"]
+        # Pick a "welfare >" market and force-resolve YES by jamming a
+        # welfare value above threshold via a custom metrics_dict on the
+        # next epoch close. We do this through the StakeBook + MarketBook
+        # APIs directly to keep the test focused on payout math.
+        target = next(m for m in open_markets if m["metric"] == "welfare" and m["op"] == ">")
+        market_id = target["market_id"]
+
+        # Worker 0 stakes YES, worker 1 stakes NO via action piggyback.
+        for aid, side in (("worker_0", "yes"), ("worker_1", "no")):
+            w = svc._env.workers[aid]
+            w.inventory["coin"] = 10.0  # ensure stake-able
+        svc.set_action("worker_0", GTBAction(
+            agent_id="worker_0", action_type=GTBActionType.NOOP,
+            stake_market_id=market_id, stake_side="yes", stake_amount=4.0,
+        ))
+        svc.set_action("worker_1", GTBAction(
+            agent_id="worker_1", action_type=GTBActionType.NOOP,
+            stake_market_id=market_id, stake_side="no", stake_amount=2.0,
+        ))
+        svc.step()
+        # Coin should be debited by stake amount post-tick.
+        assert abs(svc._env.workers["worker_0"].inventory["coin"] - 6.0) < 1e-6
+        assert abs(svc._env.workers["worker_1"].inventory["coin"] - 8.0) < 1e-6
+        # Force the market to resolve YES by injecting a sky-high welfare
+        # tick into the market book directly (bypasses simulating physics).
+        m_obj = svc._market_book.find_open(market_id)
+        assert m_obj is not None
+        synthetic_metrics = {**target, "welfare": 9999.0, m_obj.metric: 9999.0,
+                             "total_production": 0, "gini_coefficient": 0,
+                             "total_tax_revenue": 0, "total_audits": 0,
+                             "total_catches": 0, "bunching_intensity": 0}
+        resolved = svc._market_book.on_epoch_close(svc.epoch, synthetic_metrics)
+        for rm in resolved:
+            payouts = svc._stake_book.distribute(rm)
+            for aid, gross in payouts.items():
+                w = svc._env.workers[aid]
+                w.inventory["coin"] = w.inventory.get("coin", 0.0) + gross
+        # Worker 0 staked 4 YES, worker 1 staked 2 NO; YES wins → worker 0
+        # gets back 4 (principal) + 2 (loser pool) = 6. Original 10 - 4 + 6 = 12.
+        assert abs(svc._env.workers["worker_0"].inventory["coin"] - 12.0) < 1e-6
+        # Worker 1 loses the 2 coin staked; ends at 8.
+        assert abs(svc._env.workers["worker_1"].inventory["coin"] - 8.0) < 1e-6
+
+    def test_stake_rejected_on_insufficient_coin(self, gtb_mods):
+        service_mod, _ = gtb_mods
+        from worlds.gather_trade_build.config import GTBConfig
+        from worlds.gather_trade_build.env import GTBAction
+        from worlds.gather_trade_build.entities import GTBActionType
+
+        cfg = GTBConfig.from_dict({})
+        svc = service_mod.GTBWorldService(
+            config=cfg, agent_specs=[{"policy": "honest", "count": 1}],
+            steps_per_epoch=1, seed=23,
+        )
+        svc.step()
+        market_id = svc.markets()["open"][0]["market_id"]
+        svc._env.workers["worker_0"].inventory["coin"] = 0.5
+        svc.set_action("worker_0", GTBAction(
+            agent_id="worker_0", action_type=GTBActionType.NOOP,
+            stake_market_id=market_id, stake_side="yes", stake_amount=5.0,
+        ))
+        tick = svc.step()
+        rejected = [e for e in tick["events"] if e["event_type"] == "stake_rejected"]
+        assert rejected, "stake larger than coin must be rejected"
+        # Coin unchanged.
+        assert abs(svc._env.workers["worker_0"].inventory["coin"] - 0.5) < 1e-6
+
     def test_generate_is_idempotent_within_epoch(self, gtb_mods):
         service_mod, _ = gtb_mods
         from worlds.gather_trade_build.config import GTBConfig

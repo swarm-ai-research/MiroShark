@@ -39,6 +39,24 @@ _DEFAULT_SCENARIO = (
 )
 
 
+def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge dict-into-dict. Non-dict values (scalars, lists)
+    are replaced, not merged — list-replace is the right default for
+    explicit configs like 'agents:'. Only nested dicts compose.
+
+    Used so a caller can do overrides={"simulation": {"seed": 7}}
+    without wiping the rest of the simulation block from the scenario
+    YAML.
+    """
+    out = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
 def _stats_from_snapshot(snapshot, env) -> Dict[str, float]:
     """Mirror env.get_aggregate_stats() against a pre-reset worker snapshot.
 
@@ -188,6 +206,39 @@ class GTBWorldService:
         """Override the next-step action for one agent. Cleared after step()."""
         with self._lock:
             self._action_overrides[agent_id] = action
+
+    def place_stake(
+        self, agent_id: str, market_id: str, side: str, amount: float,
+    ) -> Dict[str, Any]:
+        """Public stake-place entry point used by the inbound HTTP route.
+
+        External Polymarket bots / UI clients call this to take a YES or
+        NO position on an open GTB market without having to be one of
+        the LLM-driven workers. Same validation and escrow semantics as
+        the action-piggybacked path.
+        """
+        with self._lock:
+            market = self._market_book.find_open(market_id)
+            worker = self._env.workers.get(agent_id)
+            if market is None:
+                return {"ok": False, "reason": "no_such_open_market",
+                        "market_id": market_id}
+            if worker is None:
+                return {"ok": False, "reason": "no_such_agent",
+                        "agent_id": agent_id}
+            coin = worker.inventory.get("coin", 0.0)
+            stake = self._stake_book.place(
+                agent_id=agent_id, market=market, side=side,
+                amount=float(amount), worker_coin=coin,
+                epoch=self._env.current_epoch,
+            )
+            if stake is None:
+                return {"ok": False, "reason": "invalid_or_insufficient_coin",
+                        "market_id": market_id, "side": side,
+                        "amount": amount, "coin": coin}
+            worker.inventory["coin"] = max(0.0, coin - float(amount))
+            return {"ok": True, "stake": stake.to_dict(),
+                    "remaining_coin": worker.inventory["coin"]}
 
     def _process_stakes_locked(self, actions: Dict[str, GTBAction]) -> List[Any]:
         """Apply any stake intents piggy-backed on this tick's actions.
@@ -471,7 +522,7 @@ class GTBWorldRegistry:
         with open(path) as f:
             data = yaml.safe_load(f)
         if overrides:
-            data = {**data, **overrides}
+            data = _deep_merge(data, overrides)
         config = GTBConfig.from_dict(data.get("domain", {}))
         sim = data.get("simulation", {})
         seed = (overrides or {}).get("seed") or sim.get("seed", 42)

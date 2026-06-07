@@ -344,6 +344,82 @@ class TestPlannerStatsFromSnapshot:
         )
 
 
+class TestPlaceStakeApi:
+    def test_place_stake_debits_coin_and_records(self, gtb_modules):
+        svc_mod, _ = gtb_modules
+        from worlds.gather_trade_build.config import GTBConfig
+
+        cfg = GTBConfig.from_dict({})
+        svc = svc_mod.GTBWorldService(
+            config=cfg, agent_specs=[{"policy": "honest", "count": 1}],
+            steps_per_epoch=1, seed=51,
+        )
+        svc.step()  # close epoch 0, seed markets
+        market_id = svc.markets()["open"][0]["market_id"]
+        svc._env.workers["worker_0"].inventory["coin"] = 10.0
+        out = svc.place_stake("worker_0", market_id, "yes", 3.0)
+        assert out["ok"] is True
+        assert out["remaining_coin"] == 7.0
+        assert out["stake"]["amount"] == 3.0
+        open_stakes = svc._stake_book.open_stakes()
+        assert market_id in open_stakes
+        assert len(open_stakes[market_id]) == 1
+
+    def test_place_stake_rejects_unknown_market(self, gtb_modules):
+        svc_mod, _ = gtb_modules
+        from worlds.gather_trade_build.config import GTBConfig
+
+        cfg = GTBConfig.from_dict({})
+        svc = svc_mod.GTBWorldService(
+            config=cfg, agent_specs=[{"policy": "honest", "count": 1}],
+            steps_per_epoch=1, seed=53,
+        )
+        out = svc.place_stake("worker_0", "gtb-9999", "yes", 1.0)
+        assert out["ok"] is False
+        assert out["reason"] == "no_such_open_market"
+
+    def test_place_stake_rejects_insufficient_coin(self, gtb_modules):
+        svc_mod, _ = gtb_modules
+        from worlds.gather_trade_build.config import GTBConfig
+
+        cfg = GTBConfig.from_dict({})
+        svc = svc_mod.GTBWorldService(
+            config=cfg, agent_specs=[{"policy": "honest", "count": 1}],
+            steps_per_epoch=1, seed=55,
+        )
+        svc.step()
+        market_id = svc.markets()["open"][0]["market_id"]
+        svc._env.workers["worker_0"].inventory["coin"] = 0.5
+        out = svc.place_stake("worker_0", market_id, "yes", 5.0)
+        assert out["ok"] is False
+        assert out["reason"] == "invalid_or_insufficient_coin"
+
+
+class TestDeepOverrideMerge:
+    def test_simulation_block_keys_compose_with_scenario(self, gtb_modules):
+        svc_mod, _ = gtb_modules
+        reg = svc_mod.GTBWorldRegistry()
+        # Override only the seed; steps_per_epoch should still come
+        # from the scenario YAML (=15), not be wiped by the shallow merge.
+        svc = reg.start("sim-merge", overrides={"simulation": {"seed": 7}})
+        assert svc._steps_per_epoch == 15, (
+            "deep merge should preserve scenario's steps_per_epoch when "
+            "overrides touches only simulation.seed"
+        )
+        assert svc._seed == 7
+
+    def test_top_level_agents_still_replaces_list(self, gtb_modules):
+        # Lists are list-replace, not list-merge — explicit agent configs
+        # should not silently extend the scenario's default lineup.
+        svc_mod, _ = gtb_modules
+        reg = svc_mod.GTBWorldRegistry()
+        svc = reg.start(
+            "sim-merge2",
+            overrides={"agents": [{"policy": "honest", "count": 2}]},
+        )
+        assert len(svc._policies) == 2
+
+
 class TestRegistry:
     def test_registry_round_trip(self, gtb_modules):
         svc_mod, _ = gtb_modules

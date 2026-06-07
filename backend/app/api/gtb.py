@@ -78,6 +78,32 @@ def generate_markets(sim_id: str):
     return jsonify({"sim_id": sim_id, "new_markets": new, "all": service.markets()})
 
 
+@gtb_bp.route("/<sim_id>/stake", methods=["POST"])
+def place_stake(sim_id: str):
+    """Inbound stake from an external client (UI button, Polymarket bot).
+
+    Body: {agent_id, market_id, side: "yes"|"no", amount: float}.
+    Coin is debited immediately from the worker's inventory; payouts
+    arrive when the market resolves, same as the LLM-action piggyback
+    path.
+    """
+    service = get_registry().get(sim_id)
+    if service is None:
+        return jsonify({"error": "no world for sim_id"}), 404
+    payload = request.get_json(silent=True) or {}
+    for field in ("agent_id", "market_id", "side", "amount"):
+        if field not in payload:
+            return jsonify({"error": f"missing field: {field}"}), 400
+    result = service.place_stake(
+        agent_id=str(payload["agent_id"]),
+        market_id=str(payload["market_id"]),
+        side=str(payload["side"]).lower(),
+        amount=float(payload["amount"]),
+    )
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
 @gtb_bp.route("/<sim_id>/polymarket", methods=["GET"])
 def polymarket_envelope(sim_id: str):
     """Polymarket-shaped view of the live GTB market book.

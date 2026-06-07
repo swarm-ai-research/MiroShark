@@ -18,6 +18,7 @@ gtb_bp = Blueprint('gtb', __name__)
 
 from . import graph  # noqa: E402, F401
 from . import gtb  # noqa: E402, F401
+from .sim_dispatcher import sim_dispatcher_bp  # noqa: E402, F401
 from . import simulation  # noqa: E402, F401
 from . import report  # noqa: E402, F401
 from . import templates  # noqa: E402, F401

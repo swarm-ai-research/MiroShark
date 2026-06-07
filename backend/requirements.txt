@@ -10,6 +10,10 @@ flask>=3.0.0
 flask-cors>=6.0.0
 flask-compress>=1.17
 
+# GTB world scenarios are YAML; app.services.gtb_service imports yaml at
+# module load via the gtb blueprint, so this is a hard runtime dep.
+PyYAML>=6.0
+
 # ============= LLM Related =============
 # OpenAI SDK (unified LLM calls using OpenAI format)
 openai>=1.0.0

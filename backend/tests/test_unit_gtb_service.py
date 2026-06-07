@@ -306,6 +306,44 @@ class TestMarketsInObservation:
         assert "open_markets" in captured["user"]
 
 
+class TestPlannerStatsFromSnapshot:
+    def test_planner_sees_closed_epoch_not_fresh_zeros(self, gtb_modules):
+        svc_mod, _ = gtb_modules
+        from worlds.gather_trade_build.config import GTBConfig
+        from worlds.gather_trade_build.env import GTBAction
+        from worlds.gather_trade_build.entities import GTBActionType
+
+        cfg = GTBConfig.from_dict({})
+        svc = svc_mod.GTBWorldService(
+            config=cfg,
+            agent_specs=[{"policy": "honest", "count": 3}],
+            steps_per_epoch=1,
+            seed=44,
+        )
+        # Capture every stats dict the planner sees.
+        seen = []
+        orig_update = svc._planner.update
+        svc._planner.update = lambda stats: (seen.append(dict(stats)), orig_update(stats))[1]
+
+        # Stage some non-zero gross income on each worker so end_epoch
+        # produces real numbers, and verify the planner gets THOSE — not
+        # the post-reset zeros that env.get_aggregate_stats() would yield.
+        for w in svc._env.workers.values():
+            w.gross_income_this_epoch = 5.0
+            w.cumulative_income = 5.0
+        svc.set_action("worker_0", GTBAction(
+            agent_id="worker_0", action_type=GTBActionType.NOOP,
+        ))
+        svc.step()  # closes epoch 0 → calls planner.update
+
+        assert seen, "planner.update must have been called on epoch close"
+        last = seen[-1]
+        # total_income reflects the staged 15.0 (3 workers × 5.0), NOT 0.
+        assert last["total_income"] > 0, (
+            f"planner saw post-reset zeros: {last}"
+        )
+
+
 class TestRegistry:
     def test_registry_round_trip(self, gtb_modules):
         svc_mod, _ = gtb_modules

@@ -16,6 +16,9 @@ dependencies = [
     # Production WSGI server (used by Dockerfile.railway / Cloud Run)
     "gunicorn>=22.0.0",
 
+    # GTB world scenarios are YAML; gtb_service imports yaml at module load.
+    "PyYAML>=6.0",
+
     # LLM related
     "openai>=1.0.0",
 

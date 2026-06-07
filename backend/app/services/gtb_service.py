@@ -39,6 +39,46 @@ _DEFAULT_SCENARIO = (
 )
 
 
+def _stats_from_snapshot(snapshot, env) -> Dict[str, float]:
+    """Mirror env.get_aggregate_stats() against a pre-reset worker snapshot.
+
+    end_epoch() returns a snapshot taken BEFORE per-epoch counters are
+    cleared. Reading from there gives the planner the closed-epoch
+    income / tax / Gini it actually wants to react to.
+    """
+    workers = list(snapshot.values())
+    n = len(workers) or 1
+    incomes = [w.gross_income_this_epoch for w in workers]
+    coins = [w.inventory.get("coin", 0.0) for w in workers]
+    total_income = sum(incomes)
+    mean_income = total_income / n
+    total_tax = sum(w.tax_paid_this_epoch for w in workers)
+    total_houses = sum(w.houses_built for w in workers)
+
+    sorted_inc = sorted(incomes)
+    if total_income > 0:
+        cumulative = 0.0
+        gini_sum = 0.0
+        for inc in sorted_inc:
+            cumulative += inc
+            gini_sum += cumulative
+        gini = 1.0 - 2.0 * gini_sum / (n * total_income) + 1.0 / n
+        gini = max(0.0, min(1.0, gini))
+    else:
+        gini = 0.0
+
+    return {
+        "total_income": total_income,
+        "mean_income": mean_income,
+        "gini": gini,
+        "total_tax_revenue": total_tax,
+        "total_houses": total_houses,
+        "mean_coin": sum(coins) / n,
+        "n_workers": n,
+        "n_frozen": len(getattr(env, "_frozen_agents", [])),
+    }
+
+
 def _make_policy(spec: Dict[str, Any], agent_id: str, seed: int):
     kind = spec.get("policy", "honest")
     if kind == "honest":
@@ -287,8 +327,15 @@ class GTBWorldService:
                     w.inventory["coin"] = w.inventory.get("coin", 0.0) + gross
         if not self._market_book.open_markets:
             self._market_book.generate(metrics.epoch, metrics_dict)
+        # IMPORTANT: end_epoch() above has already reset each worker's
+        # per-epoch income/tax counters and advanced current_epoch, so
+        # calling env.get_aggregate_stats() here would feed the planner
+        # the *next* (fresh, empty) epoch's zeros. Compute stats from
+        # result.snapshot — the pre-reset snapshot — instead, so the
+        # heuristic / bandit planner updates on the epoch that actually
+        # just closed.
         if self._planner.should_update(self._env.current_epoch):
-            stats = self._env.get_aggregate_stats()
+            stats = _stats_from_snapshot(result.snapshot, self._env)
             self._planner.update(stats)
         self._step_in_epoch = 0
         return metrics_dict

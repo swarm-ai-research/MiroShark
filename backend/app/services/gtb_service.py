@@ -69,6 +69,10 @@ def _make_policy(spec: Dict[str, Any], agent_id: str, seed: int):
             seed=seed,
             temperature=spec.get("temperature", 0.4),
         )
+    if kind == "llm_batched":
+        # The world drives these via a single batched LLM call per tick.
+        # The per-agent policy is honest-fallback used if the batch fails.
+        return HonestWorkerPolicy(agent_id=agent_id, seed=seed)
     raise ValueError(f"Unknown policy: {kind}")
 
 
@@ -89,6 +93,7 @@ class GTBWorldService:
 
         self._env = GTBEnvironment(config)
         self._policies = {}
+        self._batch_personas: Dict[str, Dict[str, Any]] = {}
         next_id = 0
         for spec in agent_specs:
             for _ in range(spec.get("count", 1)):
@@ -106,6 +111,8 @@ class GTBWorldService:
                     self._env.workers[agent_id].coalition_id = spec.get(
                         "coalition_id", "default"
                     )
+                if spec.get("policy") == "llm_batched":
+                    self._batch_personas[agent_id] = spec.get("persona") or {"name": agent_id}
 
         self._planner = PlannerAgent(
             config.planner, self._env.tax_schedule, seed=seed
@@ -113,6 +120,18 @@ class GTBWorldService:
         self._epoch_metrics: List[GTBMetrics] = []
         self._action_overrides: Dict[str, GTBAction] = {}
         self._step_in_epoch = 0
+        self._batch_driver = None
+        if self._batch_personas:
+            from .gtb_llm_agent import BatchLLMDriver
+            self._batch_driver = BatchLLMDriver(
+                agent_ids=list(self._batch_personas.keys()),
+                personas=dict(self._batch_personas),
+            )
+
+    def attach_batch_driver(self, driver) -> None:
+        """Replace the auto-created BatchLLMDriver (e.g. with a fake in tests)."""
+        with self._lock:
+            self._batch_driver = driver
 
     @property
     def epoch(self) -> int:
@@ -130,10 +149,21 @@ class GTBWorldService:
     def step(self) -> Dict[str, Any]:
         """Advance one step. Returns a list of event dicts."""
         with self._lock:
+            batch_actions: Dict[str, GTBAction] = {}
+            if self._batch_driver and self._batch_driver.agent_ids:
+                batch_obs = {
+                    aid: self._env.obs(aid)
+                    for aid in self._batch_driver.agent_ids
+                    if aid in self._policies
+                }
+                batch_actions = self._batch_driver.decide_all(batch_obs)
+
             actions: Dict[str, GTBAction] = {}
             for agent_id, policy in self._policies.items():
                 if agent_id in self._action_overrides:
                     actions[agent_id] = self._action_overrides[agent_id]
+                elif agent_id in batch_actions:
+                    actions[agent_id] = batch_actions[agent_id]
                 else:
                     obs = self._env.obs(agent_id)
                     actions[agent_id] = policy.decide(obs)

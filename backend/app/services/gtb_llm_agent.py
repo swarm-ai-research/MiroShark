@@ -171,3 +171,126 @@ class LLMWorkerPolicy:
                 self._agent_id, e,
             )
             return self._fallback.decide(obs)
+
+
+_BATCH_SYSTEM_PROMPT = """You are the decision layer for {n} workers in a
+gather-trade-build economy. For EACH worker, choose ONE action this tick.
+
+Mechanics: move on a grid to find wood / stone, GATHER to collect, BUILD a
+house (costs wood+stone, pays income/step), TRADE_BUY / TRADE_SELL wood or
+stone in the market at a price you set. Income is taxed at epoch end via
+piecewise brackets; SHIFT_INCOME defers earnings, MISREPORT under-reports
+(risks audit + fine). Energy depletes per action.
+
+Return JSON ONLY, mapping agent_id -> action object. Action schema:
+{action_schema}
+
+Example:
+{{
+  "worker_0": {{"action_type": "gather"}},
+  "worker_1": {{"action_type": "trade_sell", "resource_type": "wood", "quantity": 2, "price": 1.5}}
+}}
+"""
+
+
+class BatchLLMDriver:
+    """Single LLM call decides actions for a set of agents per tick.
+
+    Avoids the N-agents × N-ticks call count of per-agent LLMWorkerPolicy.
+    Tracks its own agent_id set; on parse failure falls back to honest per
+    missing/invalid agent.
+    """
+
+    def __init__(
+        self,
+        agent_ids: Optional[list] = None,
+        personas: Optional[Dict[str, Dict[str, Any]]] = None,
+        llm_client: Any = None,
+        temperature: float = 0.4,
+        max_tokens: int = 2048,
+    ) -> None:
+        self._agent_ids = list(agent_ids or [])
+        self._personas = personas or {}
+        self._llm = llm_client
+        self._temperature = temperature
+        self._max_tokens = max_tokens
+        self._fallbacks: Dict[str, HonestWorkerPolicy] = {
+            aid: HonestWorkerPolicy(agent_id=aid, seed=hash(aid) & 0xFFFF)
+            for aid in self._agent_ids
+        }
+
+    @property
+    def agent_ids(self) -> list:
+        return list(self._agent_ids)
+
+    def add_agent(self, agent_id: str, persona: Optional[Dict[str, Any]] = None) -> None:
+        if agent_id not in self._agent_ids:
+            self._agent_ids.append(agent_id)
+        if persona is not None:
+            self._personas[agent_id] = persona
+        self._fallbacks.setdefault(
+            agent_id, HonestWorkerPolicy(agent_id=agent_id, seed=hash(agent_id) & 0xFFFF)
+        )
+
+    def _ensure_llm(self):
+        if self._llm is None:
+            from ..utils.llm_client import create_llm_client
+            self._llm = create_llm_client()
+        return self._llm
+
+    def decide_all(self, obs_by_agent: Dict[str, Dict[str, Any]]) -> Dict[str, GTBAction]:
+        if not obs_by_agent:
+            return {}
+        out: Dict[str, GTBAction] = {}
+        try:
+            llm = self._ensure_llm()
+            payload = {
+                aid: {
+                    "persona": self._personas.get(aid, {"name": aid}),
+                    "obs": {
+                        "position": obs.get("position"),
+                        "inventory": obs.get("inventory"),
+                        "energy": obs.get("energy"),
+                        "gross_income": obs.get("gross_income"),
+                        "houses_built": obs.get("houses_built"),
+                        "epoch": obs.get("epoch"),
+                        "step": obs.get("step"),
+                        "frozen": obs.get("frozen"),
+                        "tax_brackets": obs.get("tax_schedule", {}).get("brackets", []),
+                        "visible_resources": [
+                            c for c in obs.get("visible_cells", []) if "resource" in c
+                        ][:8],
+                    },
+                }
+                for aid, obs in obs_by_agent.items()
+            }
+            system = _BATCH_SYSTEM_PROMPT.format(
+                n=len(obs_by_agent),
+                action_schema=json.dumps(_ACTION_SCHEMA_HINT, indent=2),
+            )
+            user = (
+                "Decide actions for these workers. Return one entry per worker.\n\n"
+                + json.dumps(payload, indent=2)
+            )
+            raw = llm.chat_json(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+            )
+            if not isinstance(raw, dict):
+                raise ValueError(f"expected object, got {type(raw).__name__}")
+            for aid in obs_by_agent:
+                entry = raw.get(aid)
+                if isinstance(entry, dict):
+                    out[aid] = _parse_action(aid, entry)
+                else:
+                    out[aid] = self._fallbacks[aid].decide(obs_by_agent[aid])
+        except Exception as e:
+            logger.warning("Batch LLM failed (%s); falling back to honest for all", e)
+            for aid, obs in obs_by_agent.items():
+                fb = self._fallbacks.get(aid) or HonestWorkerPolicy(agent_id=aid)
+                out[aid] = fb.decide(obs)
+        return out

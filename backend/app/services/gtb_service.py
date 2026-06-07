@@ -61,6 +61,14 @@ def _make_policy(spec: Dict[str, Any], agent_id: str, seed: int):
             seed=seed,
             coalition_id=spec.get("coalition_id", "default"),
         )
+    if kind == "llm":
+        from .gtb_llm_agent import LLMWorkerPolicy
+        return LLMWorkerPolicy(
+            agent_id=agent_id,
+            persona=spec.get("persona"),
+            seed=seed,
+            temperature=spec.get("temperature", 0.4),
+        )
     raise ValueError(f"Unknown policy: {kind}")
 
 

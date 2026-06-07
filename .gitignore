@@ -67,3 +67,4 @@ backend/uploads/
 # Docker data
 data/
 cloudrun.env.yaml
+backend/runs/

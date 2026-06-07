@@ -8,6 +8,10 @@
         <button @click="onStep(1)" :disabled="busy || !state">Step</button>
         <button @click="onStep(5)" :disabled="busy || !state">Step ×5</button>
         <button @click="onGenerateMarkets" :disabled="busy || !state">Seed Markets</button>
+        <label class="toggle">
+          <input type="checkbox" v-model="autoPoll" :disabled="!state" />
+          auto&nbsp;{{ pollMs }}ms
+        </label>
         <button @click="onStop" :disabled="busy || !state" class="danger">Stop</button>
       </div>
       <div v-if="error" class="error">{{ error }}</div>
@@ -94,13 +98,44 @@
           <div class="market-list">
             <div v-for="m in state.markets.open" :key="m.market_id" class="market open">
               <div class="q">{{ m.question }}</div>
-              <div class="meta">deadline ep {{ m.deadline_epoch }} · created ep {{ m.created_epoch }}</div>
+              <div class="meta">
+                deadline ep {{ m.deadline_epoch }} · created ep {{ m.created_epoch }}
+                <span v-if="marketStakeTotals[m.market_id]" class="stake-tag">
+                  · YES {{ marketStakeTotals[m.market_id].yes.toFixed(1) }} / NO {{ marketStakeTotals[m.market_id].no.toFixed(1) }}
+                </span>
+              </div>
             </div>
             <div v-for="m in lastResolved" :key="m.market_id" class="market" :class="m.status">
               <div class="q">{{ m.question }}</div>
               <div class="meta">{{ m.status.toUpperCase() }} at ep {{ m.resolved_epoch }} (value {{ m.resolved_value?.toFixed(2) ?? '—' }})</div>
             </div>
           </div>
+        </section>
+
+        <section v-if="state.stakes">
+          <h3>Open stakes ({{ openStakeCount }})</h3>
+          <div v-if="openStakeCount === 0" class="muted">No agents have positions on open markets.</div>
+          <table v-else class="stakes">
+            <thead><tr><th>agent</th><th>market</th><th>side</th><th>amt</th></tr></thead>
+            <tbody>
+              <tr v-for="s in openStakeRows" :key="`${s.agent_id}-${s.market_id}-${s.epoch}`">
+                <td>{{ s.agent_id }}</td>
+                <td class="market-id">{{ s.market_id }}</td>
+                <td :class="['side', s.side]">{{ s.side.toUpperCase() }}</td>
+                <td>{{ s.amount.toFixed(2) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <details v-if="recentStakeHistory.length" class="history">
+            <summary>Recent stake events ({{ recentStakeHistory.length }})</summary>
+            <ul>
+              <li v-for="(h, i) in recentStakeHistory" :key="i" :class="['hist', h.event]">
+                <code>{{ h.event }}</code> {{ h.agent_id }} · {{ h.market_id }}
+                <span v-if="h.side"> · {{ h.side.toUpperCase() }} {{ h.amount?.toFixed?.(2) }}</span>
+                <span v-if="h.gross_payout"> → +{{ h.gross_payout.toFixed(2) }}</span>
+              </li>
+            </ul>
+          </details>
         </section>
       </aside>
 
@@ -121,7 +156,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import {
   startGtb, stepGtb, getGtbState, stopGtb,
   generateGtbMarkets,
@@ -134,6 +169,9 @@ const state = ref(null)
 const error = ref(null)
 const busy = ref(false)
 const cell = 24
+const autoPoll = ref(false)
+const pollMs = 1500
+let pollTimer = null
 
 async function refresh () {
   const r = await getGtbState(simId.value)
@@ -173,8 +211,42 @@ const lastResolved = computed(() => {
   return state.value.markets.resolved.slice(-5).reverse()
 })
 
+const openStakeRows = computed(() => {
+  const book = state.value?.stakes?.open_stakes || {}
+  const rows = []
+  for (const mid of Object.keys(book)) for (const s of book[mid]) rows.push(s)
+  return rows.sort((a, b) => a.agent_id.localeCompare(b.agent_id))
+})
+
+const openStakeCount = computed(() => openStakeRows.value.length)
+
+const marketStakeTotals = computed(() => {
+  const totals = {}
+  for (const s of openStakeRows.value) {
+    if (!totals[s.market_id]) totals[s.market_id] = { yes: 0, no: 0 }
+    totals[s.market_id][s.side] = (totals[s.market_id][s.side] || 0) + s.amount
+  }
+  return totals
+})
+
+const recentStakeHistory = computed(() =>
+  (state.value?.stakes?.history || []).slice(-10).reverse()
+)
+
 const series = (key) =>
   (state.value?.metrics_history || []).map(m => m[key])
+
+function stopPoll () { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
+function startPoll () {
+  stopPoll()
+  pollTimer = setInterval(async () => {
+    if (busy.value || !state.value) return
+    try { await refresh() } catch (e) { /* tolerate transient errors silently */ }
+  }, pollMs)
+}
+watch(autoPoll, (on) => { on ? startPoll() : stopPoll() })
+watch(state, (s) => { if (!s) { autoPoll.value = false; stopPoll() } })
+onBeforeUnmount(stopPoll)
 
 const resourceColor = (t) => t === 'wood' ? '#3aa55c' : t === 'stone' ? '#8a93a1' : '#f9a826'
 
@@ -232,4 +304,23 @@ button.danger { border-color: #ff5577; color: #ff5577; }
 .charts h3 { margin: 0 0 8px 0; font-size: 13px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
 .chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .empty { color: #8b949e; margin-top: 24px; }
+.toggle { display: inline-flex; align-items: center; gap: 4px; color: #8b949e; font-size: 12px; user-select: none; }
+.toggle input { accent-color: #7ab8ff; }
+.stake-tag { color: #c084fc; font-family: monospace; }
+.muted { color: #8b949e; font-size: 12px; }
+.stakes { width: 100%; font-family: monospace; font-size: 12px; border-collapse: collapse; }
+.stakes th { text-align: left; color: #8b949e; font-weight: 400; padding-bottom: 4px; border-bottom: 1px solid #21262d; }
+.stakes td { padding: 3px 4px; border-bottom: 1px dotted #21262d; }
+.stakes td.side { font-weight: 600; }
+.stakes td.side.yes { color: #7cf29c; }
+.stakes td.side.no { color: #ff7ad9; }
+.stakes td.market-id { color: #8b949e; }
+.history { margin-top: 8px; }
+.history summary { color: #8b949e; cursor: pointer; font-size: 12px; }
+.history ul { list-style: none; padding: 6px 0 0 0; margin: 0; max-height: 180px; overflow-y: auto; }
+.history li { font-family: monospace; font-size: 11px; color: #e6edf3; padding: 2px 0; }
+.history li code { color: #8b949e; }
+.history li.won { color: #7cf29c; }
+.history li.lost { color: #ff7ad9; }
+.history li.stake_rejected { color: #ff5577; }
 </style>

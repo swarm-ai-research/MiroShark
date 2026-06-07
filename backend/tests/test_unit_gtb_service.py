@@ -244,6 +244,68 @@ class TestBatchLLMDriver:
         assert "worker_1" in events_by_agent  # honest fallback fired
 
 
+class TestMarketsInObservation:
+    def test_llm_policy_sees_open_markets(self, gtb_modules):
+        svc_mod, llm_mod = gtb_modules
+        from worlds.gather_trade_build.config import GTBConfig
+
+        captured = {}
+
+        class CapturingLLM:
+            def chat_json(self, messages, temperature=0.4, max_tokens=300):
+                # Stash the user prompt so the test can read what the
+                # service handed to the LLM.
+                captured["user"] = messages[-1]["content"]
+                return {"action_type": "gather"}
+
+        cfg = GTBConfig.from_dict({})
+        svc = svc_mod.GTBWorldService(
+            config=cfg,
+            agent_specs=[{"policy": "honest", "count": 1}],
+            steps_per_epoch=1,  # close fast so markets seed quickly
+            seed=99,
+        )
+        # Drive one epoch close so the market book seeds.
+        svc.step()
+        assert svc.markets()["open"], "precondition: markets should be open"
+
+        # Install an LLM policy now and run a second step.
+        svc._policies["worker_0"] = llm_mod.LLMWorkerPolicy(
+            agent_id="worker_0", llm_client=CapturingLLM()
+        )
+        svc.step()
+        assert "open_markets" in captured["user"], (
+            "the LLM prompt should surface open_markets so agents can act on them"
+        )
+
+    def test_batch_driver_sees_open_markets(self, gtb_modules):
+        svc_mod, llm_mod = gtb_modules
+        from worlds.gather_trade_build.config import GTBConfig
+
+        captured = {}
+
+        class CapturingBatchLLM:
+            def chat_json(self, messages, temperature=0.4, max_tokens=2048):
+                captured["user"] = messages[-1]["content"]
+                return {"worker_0": {"action_type": "gather"}}
+
+        cfg = GTBConfig.from_dict({})
+        svc = svc_mod.GTBWorldService(
+            config=cfg,
+            agent_specs=[{"policy": "llm_batched", "count": 1}],
+            steps_per_epoch=1,
+            seed=101,
+        )
+        svc.step()  # seeds markets at epoch 0 close
+        svc.attach_batch_driver(
+            llm_mod.BatchLLMDriver(
+                agent_ids=["worker_0"], llm_client=CapturingBatchLLM()
+            )
+        )
+        svc.step()
+        assert "open_markets" in captured["user"]
+
+
 class TestRegistry:
     def test_registry_round_trip(self, gtb_modules):
         svc_mod, _ = gtb_modules

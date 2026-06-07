@@ -148,13 +148,30 @@ class GTBWorldService:
         with self._lock:
             self._action_overrides[agent_id] = action
 
+    def _obs_with_markets(self, agent_id: str) -> Dict[str, Any]:
+        """Env obs + open markets, so LLM agents can reason about how
+        their actions push the metric stream toward open YES/NO questions."""
+        obs = self._env.obs(agent_id)
+        obs["open_markets"] = [
+            {
+                "market_id": m.market_id,
+                "question": m.question,
+                "metric": m.metric,
+                "op": m.op,
+                "threshold": m.threshold,
+                "deadline_epoch": m.deadline_epoch,
+            }
+            for m in self._market_book.open_markets
+        ]
+        return obs
+
     def step(self) -> Dict[str, Any]:
         """Advance one step. Returns a list of event dicts."""
         with self._lock:
             batch_actions: Dict[str, GTBAction] = {}
             if self._batch_driver and self._batch_driver.agent_ids:
                 batch_obs = {
-                    aid: self._env.obs(aid)
+                    aid: self._obs_with_markets(aid)
                     for aid in self._batch_driver.agent_ids
                     if aid in self._policies
                 }
@@ -167,7 +184,7 @@ class GTBWorldService:
                 elif agent_id in batch_actions:
                     actions[agent_id] = batch_actions[agent_id]
                 else:
-                    obs = self._env.obs(agent_id)
+                    obs = self._obs_with_markets(agent_id)
                     actions[agent_id] = policy.decide(obs)
             events = self._env.apply_actions(actions)
             self._action_overrides.clear()

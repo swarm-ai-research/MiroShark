@@ -84,7 +84,18 @@ def _render_obs(obs: Dict[str, Any]) -> str:
         "tax_brackets": obs.get("tax_schedule", {}).get("brackets", []),
         "visible_resources": res_cells[:10],
         "visible_cells_count": len(visible),
+        "open_markets": obs.get("open_markets", []),
     }, indent=2)
+
+
+_MARKET_GUIDANCE = (
+    "If `open_markets` contains questions about welfare / Gini / production "
+    "/ tax revenue / bunching, consider how your action shifts those metrics. "
+    "Building houses raises production + your income (and the Gini if you're "
+    "already wealthy); gathering more raises welfare; misreporting lowers tax "
+    "revenue. Pick the action whose effect on the metric stream best matches "
+    "your beliefs about which markets resolve YES."
+)
 
 
 def _parse_action(agent_id: str, raw: Dict[str, Any]) -> GTBAction:
@@ -157,6 +168,7 @@ class LLMWorkerPolicy:
                 _render_persona(self._persona)
                 + "\n\nCurrent observation:\n"
                 + _render_obs(obs)
+                + "\n\n" + _MARKET_GUIDANCE
                 + "\n\nChoose your next action. JSON only."
             )
             messages = [
@@ -181,6 +193,14 @@ house (costs wood+stone, pays income/step), TRADE_BUY / TRADE_SELL wood or
 stone in the market at a price you set. Income is taxed at epoch end via
 piecewise brackets; SHIFT_INCOME defers earnings, MISREPORT under-reports
 (risks audit + fine). Energy depletes per action.
+
+The payload also includes `open_markets` — binary YES/NO questions on the
+metric stream (welfare, Gini, production, tax revenue, bunching). Each
+worker's action shifts those metrics: build raises production + Gini if
+the worker is already wealthy; gather raises welfare; misreport lowers
+tax revenue. Use the open markets as belief targets — pick the action
+that pushes the metric stream toward the markets each persona thinks
+will resolve YES.
 
 Return JSON ONLY, mapping agent_id -> action object. Action schema:
 {action_schema}
@@ -244,25 +264,31 @@ class BatchLLMDriver:
         out: Dict[str, GTBAction] = {}
         try:
             llm = self._ensure_llm()
+            # Markets are world-wide; emit once at top level instead of per-agent.
+            any_obs = next(iter(obs_by_agent.values()))
+            shared_markets = any_obs.get("open_markets", [])
             payload = {
-                aid: {
-                    "persona": self._personas.get(aid, {"name": aid}),
-                    "obs": {
-                        "position": obs.get("position"),
-                        "inventory": obs.get("inventory"),
-                        "energy": obs.get("energy"),
-                        "gross_income": obs.get("gross_income"),
-                        "houses_built": obs.get("houses_built"),
-                        "epoch": obs.get("epoch"),
-                        "step": obs.get("step"),
-                        "frozen": obs.get("frozen"),
-                        "tax_brackets": obs.get("tax_schedule", {}).get("brackets", []),
-                        "visible_resources": [
-                            c for c in obs.get("visible_cells", []) if "resource" in c
-                        ][:8],
-                    },
-                }
-                for aid, obs in obs_by_agent.items()
+                "open_markets": shared_markets,
+                "workers": {
+                    aid: {
+                        "persona": self._personas.get(aid, {"name": aid}),
+                        "obs": {
+                            "position": obs.get("position"),
+                            "inventory": obs.get("inventory"),
+                            "energy": obs.get("energy"),
+                            "gross_income": obs.get("gross_income"),
+                            "houses_built": obs.get("houses_built"),
+                            "epoch": obs.get("epoch"),
+                            "step": obs.get("step"),
+                            "frozen": obs.get("frozen"),
+                            "tax_brackets": obs.get("tax_schedule", {}).get("brackets", []),
+                            "visible_resources": [
+                                c for c in obs.get("visible_cells", []) if "resource" in c
+                            ][:8],
+                        },
+                    }
+                    for aid, obs in obs_by_agent.items()
+                },
             }
             system = _BATCH_SYSTEM_PROMPT.format(
                 n=len(obs_by_agent),

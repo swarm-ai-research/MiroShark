@@ -20,3 +20,6 @@ export const getGtbMarkets = (simId) =>
 
 export const generateGtbMarkets = (simId) =>
   service.post(`/api/gtb/${simId}/markets/generate`)
+
+export const getGtbPolymarket = (simId) =>
+  service.get(`/api/gtb/${simId}/polymarket`)

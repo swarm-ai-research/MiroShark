@@ -68,6 +68,26 @@
       </section>
 
       <aside class="side-panel">
+        <section v-if="headline" class="headline-card" :class="`dir-${headline.direction.toLowerCase()}`">
+          <div class="headline-row">
+            <span class="badge">Top signal</span>
+            <span class="dir">{{ headline.direction }}</span>
+            <span class="tier">{{ headline.confidence_tier }}</span>
+          </div>
+          <div class="q">{{ headline.suggested_market_title }}</div>
+          <div class="probs">
+            <span class="yes">YES {{ (headline.yes_probability * 100).toFixed(1) }}%</span>
+            <span class="sep">·</span>
+            <span class="no">NO {{ (headline.no_probability * 100).toFixed(1) }}%</span>
+            <span class="sep">·</span>
+            <span class="conf">conf {{ headline.confidence_pct.toFixed(0) }}</span>
+          </div>
+          <div class="meta">
+            pools YES {{ headline.yes_pool.toFixed(1) }} / NO {{ headline.no_pool.toFixed(1) }}
+            · deadline ep {{ headline.deadline_epoch }}
+          </div>
+        </section>
+
         <section>
           <h3>Tax brackets</h3>
           <table class="brackets">
@@ -159,13 +179,14 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import {
   startGtb, stepGtb, getGtbState, stopGtb,
-  generateGtbMarkets,
+  generateGtbMarkets, getGtbPolymarket,
 } from '../api/gtb'
 import Sparkline from '../components/GtbSparkline.vue'
 
 const props = defineProps({ simId: { type: String, default: '' } })
 const simId = ref(props.simId || 'gtb-demo')
 const state = ref(null)
+const polymarket = ref(null)
 const error = ref(null)
 const busy = ref(false)
 const cell = 24
@@ -174,8 +195,12 @@ const pollMs = 1500
 let pollTimer = null
 
 async function refresh () {
-  const r = await getGtbState(simId.value)
-  state.value = r.data.state
+  const [s, p] = await Promise.all([
+    getGtbState(simId.value),
+    getGtbPolymarket(simId.value).catch(() => null),
+  ])
+  state.value = s.data.state
+  polymarket.value = p?.data || null
 }
 
 async function withBusy (fn) {
@@ -189,6 +214,7 @@ async function withBusy (fn) {
 const onStart = () => withBusy(async () => {
   const r = await startGtb(simId.value, {})
   state.value = r.data.state
+  await refresh()
 })
 
 const onStep = (n) => withBusy(async () => {
@@ -199,6 +225,7 @@ const onStep = (n) => withBusy(async () => {
 const onStop = () => withBusy(async () => {
   await stopGtb(simId.value)
   state.value = null
+  polymarket.value = null
 })
 
 const onGenerateMarkets = () => withBusy(async () => {
@@ -232,6 +259,8 @@ const marketStakeTotals = computed(() => {
 const recentStakeHistory = computed(() =>
   (state.value?.stakes?.history || []).slice(-10).reverse()
 )
+
+const headline = computed(() => polymarket.value?.headline || null)
 
 const series = (key) =>
   (state.value?.metrics_history || []).map(m => m[key])
@@ -323,4 +352,22 @@ button.danger { border-color: #ff5577; color: #ff5577; }
 .history li.won { color: #7cf29c; }
 .history li.lost { color: #ff7ad9; }
 .history li.stake_rejected { color: #ff5577; }
+.headline-card { border-left: 4px solid #30363d; }
+.headline-card.dir-bullish { border-left-color: #7cf29c; }
+.headline-card.dir-bearish { border-left-color: #ff7ad9; }
+.headline-card.dir-neutral { border-left-color: #8b949e; }
+.headline-card .headline-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.headline-card .badge { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; background: #21262d; color: #8b949e; padding: 2px 6px; border-radius: 3px; }
+.headline-card .dir { font-weight: 600; font-size: 13px; }
+.headline-card.dir-bullish .dir { color: #7cf29c; }
+.headline-card.dir-bearish .dir { color: #ff7ad9; }
+.headline-card.dir-neutral .dir { color: #8b949e; }
+.headline-card .tier { font-size: 11px; color: #c084fc; text-transform: uppercase; letter-spacing: 0.04em; }
+.headline-card .q { color: #e6edf3; font-size: 13px; margin-bottom: 6px; }
+.headline-card .probs { font-family: monospace; font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.headline-card .probs .yes { color: #7cf29c; }
+.headline-card .probs .no { color: #ff7ad9; }
+.headline-card .probs .conf { color: #c084fc; }
+.headline-card .probs .sep { color: #30363d; }
+.headline-card .meta { color: #8b949e; font-family: monospace; font-size: 11px; margin-top: 4px; }
 </style>

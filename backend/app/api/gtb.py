@@ -76,3 +76,22 @@ def generate_markets(sim_id: str):
         return jsonify({"error": "no world for sim_id"}), 404
     new = service.generate_markets()
     return jsonify({"sim_id": sim_id, "new_markets": new, "all": service.markets()})
+
+
+@gtb_bp.route("/<sim_id>/polymarket", methods=["GET"])
+def polymarket_envelope(sim_id: str):
+    """Polymarket-shaped view of the live GTB market book.
+
+    Same schema_version + confidence_tier vocabulary as the existing
+    polymarket_service surface, so downstream bots can parse both
+    streams through one adapter. Open markets get a stake-derived YES
+    probability; resolved markets get 0.0 / 1.0 reflecting the outcome.
+    """
+    service = get_registry().get(sim_id)
+    if service is None:
+        return jsonify({"error": "no world for sim_id"}), 404
+    from ..services.gtb_polymarket import compute_gtb_polymarket
+    payload = compute_gtb_polymarket(service.state(), sim_id)
+    if payload is None:
+        return jsonify({"error": "world has no market state yet"}), 404
+    return jsonify(payload)

@@ -69,6 +69,12 @@ const routes = [
     name: 'Verified',
     component: () => import('../views/ExploreView.vue'),
     props: { verifiedOnly: true }
+  },
+  {
+    path: '/gtb/:simId?',
+    name: 'GTB',
+    component: () => import('../views/GTBView.vue'),
+    props: true
   }
 ]
 

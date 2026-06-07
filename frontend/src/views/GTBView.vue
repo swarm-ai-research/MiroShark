@@ -1,0 +1,235 @@
+<template>
+  <div class="gtb">
+    <header class="gtb-header">
+      <h1>Gather · Trade · Build</h1>
+      <div class="controls">
+        <input v-model="simId" placeholder="sim id" class="sim-input" />
+        <button @click="onStart" :disabled="busy">Start</button>
+        <button @click="onStep(1)" :disabled="busy || !state">Step</button>
+        <button @click="onStep(5)" :disabled="busy || !state">Step ×5</button>
+        <button @click="onGenerateMarkets" :disabled="busy || !state">Seed Markets</button>
+        <button @click="onStop" :disabled="busy || !state" class="danger">Stop</button>
+      </div>
+      <div v-if="error" class="error">{{ error }}</div>
+    </header>
+
+    <div v-if="state" class="layout">
+      <section class="grid-panel">
+        <h2>Grid · epoch {{ state.epoch }} · step {{ state.step_in_epoch }}</h2>
+        <svg
+          :viewBox="`0 0 ${state.config.map.width * cell} ${state.config.map.height * cell}`"
+          class="grid"
+          preserveAspectRatio="xMidYMid meet"
+        >
+          <rect
+            v-for="res in state.resources"
+            :key="`res-${res.position[0]}-${res.position[1]}`"
+            :x="res.position[1] * cell"
+            :y="res.position[0] * cell"
+            :width="cell" :height="cell"
+            :fill="resourceColor(res.type)"
+            :opacity="0.4 + Math.min(1, res.amount / 5) * 0.5"
+          />
+          <rect
+            v-for="h in state.houses"
+            :key="`h-${h.position[0]}-${h.position[1]}-${h.owner_id}`"
+            :x="h.position[1] * cell + 1"
+            :y="h.position[0] * cell + 1"
+            :width="cell - 2" :height="cell - 2"
+            fill="none" stroke="#f9a826" stroke-width="2"
+          />
+          <circle
+            v-for="w in state.workers"
+            :key="`w-${w.agent_id}`"
+            :cx="w.position[1] * cell + cell / 2"
+            :cy="w.position[0] * cell + cell / 2"
+            :r="cell / 3"
+            :fill="workerColor(w)"
+            :stroke="w.times_caught > 0 ? '#ff5577' : '#ffffff'"
+            stroke-width="1"
+          >
+            <title>{{ w.agent_id }} · {{ w.policy }} · coin {{ w.inventory.coin?.toFixed(1) }} · wood {{ w.inventory.wood?.toFixed(1) }} · stone {{ w.inventory.stone?.toFixed(1) }}</title>
+          </circle>
+        </svg>
+        <div class="legend">
+          <span class="dot wood"></span> wood
+          <span class="dot stone"></span> stone
+          <span class="dot honest"></span> honest
+          <span class="dot llm"></span> llm
+          <span class="dot gaming"></span> gaming
+          <span class="dot evasive"></span> evasive
+          <span class="dot collusive"></span> collusive
+          <span class="legend-house"></span> house
+        </div>
+      </section>
+
+      <aside class="side-panel">
+        <section>
+          <h3>Tax brackets</h3>
+          <table class="brackets">
+            <thead><tr><th>≥ income</th><th>rate</th></tr></thead>
+            <tbody>
+              <tr v-for="(b, i) in state.tax_brackets" :key="i">
+                <td>{{ b.threshold.toFixed(2) }}</td>
+                <td>{{ (b.rate * 100).toFixed(1) }}%</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section v-if="state.last_metrics">
+          <h3>Last epoch metrics</h3>
+          <ul class="metric-list">
+            <li><span>welfare</span><span>{{ state.last_metrics.welfare.toFixed(3) }}</span></li>
+            <li><span>gini</span><span>{{ state.last_metrics.gini_coefficient.toFixed(3) }}</span></li>
+            <li><span>production</span><span>{{ state.last_metrics.total_production.toFixed(2) }}</span></li>
+            <li><span>tax revenue</span><span>{{ state.last_metrics.total_tax_revenue.toFixed(2) }}</span></li>
+            <li><span>audits / catches</span><span>{{ state.last_metrics.total_audits }} / {{ state.last_metrics.total_catches }}</span></li>
+            <li><span>bunching</span><span>{{ state.last_metrics.bunching_intensity.toFixed(3) }}</span></li>
+          </ul>
+        </section>
+
+        <section v-if="state.markets">
+          <h3>Markets ({{ state.markets.open.length }} open · {{ state.markets.resolved.length }} resolved)</h3>
+          <div class="market-list">
+            <div v-for="m in state.markets.open" :key="m.market_id" class="market open">
+              <div class="q">{{ m.question }}</div>
+              <div class="meta">deadline ep {{ m.deadline_epoch }} · created ep {{ m.created_epoch }}</div>
+            </div>
+            <div v-for="m in lastResolved" :key="m.market_id" class="market" :class="m.status">
+              <div class="q">{{ m.question }}</div>
+              <div class="meta">{{ m.status.toUpperCase() }} at ep {{ m.resolved_epoch }} (value {{ m.resolved_value?.toFixed(2) ?? '—' }})</div>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <section v-if="state.metrics_history.length" class="charts">
+        <h3>Metrics over epochs</h3>
+        <div class="chart-row">
+          <Sparkline label="welfare"   :values="series('welfare')" stroke="#7cf29c" />
+          <Sparkline label="gini"      :values="series('gini_coefficient')" stroke="#f9a826" />
+          <Sparkline label="prod"      :values="series('total_production')" stroke="#7ab8ff" />
+          <Sparkline label="tax"       :values="series('total_tax_revenue')" stroke="#ff7ad9" />
+          <Sparkline label="bunching"  :values="series('bunching_intensity')" stroke="#c084fc" />
+        </div>
+      </section>
+    </div>
+
+    <p v-else class="empty">No world loaded. Pick a sim id and hit Start.</p>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed } from 'vue'
+import {
+  startGtb, stepGtb, getGtbState, stopGtb,
+  generateGtbMarkets,
+} from '../api/gtb'
+import Sparkline from '../components/GtbSparkline.vue'
+
+const props = defineProps({ simId: { type: String, default: '' } })
+const simId = ref(props.simId || 'gtb-demo')
+const state = ref(null)
+const error = ref(null)
+const busy = ref(false)
+const cell = 24
+
+async function refresh () {
+  const r = await getGtbState(simId.value)
+  state.value = r.data.state
+}
+
+async function withBusy (fn) {
+  busy.value = true
+  error.value = null
+  try { await fn() } catch (e) {
+    error.value = e?.response?.data?.error || e?.message || String(e)
+  } finally { busy.value = false }
+}
+
+const onStart = () => withBusy(async () => {
+  const r = await startGtb(simId.value, {})
+  state.value = r.data.state
+})
+
+const onStep = (n) => withBusy(async () => {
+  await stepGtb(simId.value, n)
+  await refresh()
+})
+
+const onStop = () => withBusy(async () => {
+  await stopGtb(simId.value)
+  state.value = null
+})
+
+const onGenerateMarkets = () => withBusy(async () => {
+  await generateGtbMarkets(simId.value)
+  await refresh()
+})
+
+const lastResolved = computed(() => {
+  if (!state.value) return []
+  return state.value.markets.resolved.slice(-5).reverse()
+})
+
+const series = (key) =>
+  (state.value?.metrics_history || []).map(m => m[key])
+
+const resourceColor = (t) => t === 'wood' ? '#3aa55c' : t === 'stone' ? '#8a93a1' : '#f9a826'
+
+const POLICY_COLOR = {
+  HonestWorkerPolicy: '#7ab8ff',
+  LLMWorkerPolicy: '#a78bfa',
+  GamingWorkerPolicy: '#f9a826',
+  EvasiveWorkerPolicy: '#ff7ad9',
+  CollusiveWorkerPolicy: '#ff5577',
+}
+const workerColor = (w) => POLICY_COLOR[w.policy] || '#cccccc'
+</script>
+
+<style scoped>
+.gtb { padding: 16px 24px; color: #e6edf3; background: #010409; min-height: 100vh; }
+.gtb-header h1 { margin: 0 0 8px 0; font-size: 22px; }
+.controls { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.sim-input { padding: 6px 10px; border-radius: 4px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3; }
+button { padding: 6px 12px; border-radius: 4px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.danger { border-color: #ff5577; color: #ff5577; }
+.error { color: #ff5577; margin-top: 6px; font-family: monospace; font-size: 13px; }
+.layout { display: grid; grid-template-columns: minmax(420px, 1fr) 360px; grid-template-rows: auto auto; gap: 16px; margin-top: 12px; }
+.grid-panel { grid-row: 1 / 2; background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 12px; }
+.grid-panel h2 { margin: 0 0 8px 0; font-size: 14px; font-weight: 500; color: #8b949e; }
+.grid { width: 100%; height: auto; background: #010409; border: 1px solid #161b22; }
+.legend { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 12px; color: #8b949e; margin-top: 8px; }
+.legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.legend .dot.wood { background: #3aa55c; }
+.legend .dot.stone { background: #8a93a1; }
+.legend .dot.honest { background: #7ab8ff; }
+.legend .dot.llm { background: #a78bfa; }
+.legend .dot.gaming { background: #f9a826; }
+.legend .dot.evasive { background: #ff7ad9; }
+.legend .dot.collusive { background: #ff5577; }
+.legend-house { display: inline-block; width: 10px; height: 10px; border: 2px solid #f9a826; margin-right: 4px; vertical-align: middle; }
+.side-panel { grid-row: 1 / 3; display: flex; flex-direction: column; gap: 12px; }
+.side-panel section { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 12px; }
+.side-panel h3 { margin: 0 0 8px 0; font-size: 13px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
+.brackets { width: 100%; font-family: monospace; font-size: 13px; }
+.brackets th { text-align: left; color: #8b949e; font-weight: 400; padding-bottom: 4px; }
+.brackets td { padding: 2px 0; }
+.metric-list { list-style: none; padding: 0; margin: 0; font-family: monospace; font-size: 13px; }
+.metric-list li { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px dotted #21262d; }
+.metric-list li:last-child { border-bottom: 0; }
+.market-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.market { padding: 6px 8px; border-left: 3px solid #30363d; background: #010409; font-size: 12px; border-radius: 0 4px 4px 0; }
+.market.open { border-left-color: #7ab8ff; }
+.market.yes { border-left-color: #7cf29c; opacity: 0.85; }
+.market.no { border-left-color: #ff5577; opacity: 0.85; }
+.market.expired { border-left-color: #8b949e; opacity: 0.6; }
+.market .q { color: #e6edf3; }
+.market .meta { color: #8b949e; font-family: monospace; font-size: 11px; margin-top: 2px; }
+.charts { grid-row: 2 / 3; background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 12px; }
+.charts h3 { margin: 0 0 8px 0; font-size: 13px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
+.chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.empty { color: #8b949e; margin-top: 24px; }
+</style>

@@ -59,3 +59,20 @@ def stop_world(sim_id: str):
 @gtb_bp.route("/", methods=["GET"])
 def list_worlds():
     return jsonify({"sim_ids": get_registry().list_ids()})
+
+
+@gtb_bp.route("/<sim_id>/markets", methods=["GET"])
+def get_markets(sim_id: str):
+    service = get_registry().get(sim_id)
+    if service is None:
+        return jsonify({"error": "no world for sim_id"}), 404
+    return jsonify({"sim_id": sim_id, "markets": service.markets()})
+
+
+@gtb_bp.route("/<sim_id>/markets/generate", methods=["POST"])
+def generate_markets(sim_id: str):
+    service = get_registry().get(sim_id)
+    if service is None:
+        return jsonify({"error": "no world for sim_id"}), 404
+    new = service.generate_markets()
+    return jsonify({"sim_id": sim_id, "new_markets": new, "all": service.markets()})

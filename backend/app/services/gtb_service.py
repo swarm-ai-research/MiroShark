@@ -120,6 +120,8 @@ class GTBWorldService:
         self._epoch_metrics: List[GTBMetrics] = []
         self._action_overrides: Dict[str, GTBAction] = {}
         self._step_in_epoch = 0
+        from .gtb_markets import GTBMarketBook
+        self._market_book = GTBMarketBook()
         self._batch_driver = None
         if self._batch_personas:
             from .gtb_llm_agent import BatchLLMDriver
@@ -199,11 +201,17 @@ class GTBWorldService:
             ineq_weight=self._config.planner.ineq_weight,
         )
         self._epoch_metrics.append(metrics)
+        metrics_dict = self._metrics_to_dict(metrics)
+        # Resolve open markets and lazily seed new ones so there's
+        # always something to bet on.
+        self._market_book.on_epoch_close(metrics.epoch, metrics_dict)
+        if not self._market_book.open_markets:
+            self._market_book.generate(metrics.epoch, metrics_dict)
         if self._planner.should_update(self._env.current_epoch):
             stats = self._env.get_aggregate_stats()
             self._planner.update(stats)
         self._step_in_epoch = 0
-        return self._metrics_to_dict(metrics)
+        return metrics_dict
 
     def state(self) -> Dict[str, Any]:
         """JSON-serializable snapshot of the world."""
@@ -262,7 +270,25 @@ class GTBWorldService:
                 "metrics_history": [
                     self._metrics_to_dict(m) for m in self._epoch_metrics
                 ],
+                "markets": self._market_book.to_dict(),
             }
+
+    def generate_markets(self) -> List[Dict[str, Any]]:
+        """Force-seed markets from the latest metrics. Returns new market dicts."""
+        with self._lock:
+            if not self._epoch_metrics:
+                return []
+            last = self._epoch_metrics[-1]
+            latest = self._metrics_to_dict(last)
+            # Anchor on the metrics' own epoch so close-time seeding and
+            # manual seeding produce identical question strings → dedup
+            # is stable within an epoch.
+            new = self._market_book.generate(last.epoch, latest)
+            return [m.to_dict() for m in new]
+
+    def markets(self) -> Dict[str, Any]:
+        with self._lock:
+            return self._market_book.to_dict()
 
     def _resource_grid(self) -> List[Dict[str, Any]]:
         out = []

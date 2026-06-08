@@ -185,10 +185,15 @@ def compute_gtb_metrics(
         ) / n
     )
 
-    # Enforcement
-    audit_events = [e for e in events if e.event_type in ("audit_caught", "audit_miss", "audit_false_positive")]
+    # Enforcement. The `audit_miss` event type used to fire when a
+    # discrepant worker was selected for audit and the RNG didn't
+    # catch them; after the Codex-P2 fix (see _run_audits in env.py),
+    # audit selection IS the catch, so audit_miss never fires. Kept
+    # `audit_caught` + `audit_false_positive` as the live signal types.
+    audit_events = [e for e in events if e.event_type in ("audit_caught", "audit_false_positive")]
     catches = [e for e in events if e.event_type == "audit_caught"]
-    misses = [e for e in events if e.event_type == "audit_miss"]
+    # No misses with the post-P2 semantics: every audit catches.
+    misses: list = []
     total_evasion_attempts = len(catches) + len(misses)
     undetected_rate = len(misses) / max(total_evasion_attempts, 1)
     total_fines = sum(e.details.get("fine", 0.0) for e in catches)

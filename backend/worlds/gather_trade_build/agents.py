@@ -300,3 +300,69 @@ class CollusiveWorkerPolicy(GTBWorkerPolicy):
             )
 
         return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+
+
+class MakerWorkerPolicy(GTBWorkerPolicy):
+    """Passive market-maker: posts limit sell orders on hoarded resources,
+    crosses the spread to buy if cheap. Added for bd-4jr to test whether
+    seeding the market with passive liquidity activates LLM/rule-based
+    counterparty trading. Does not gather or build — pure microstructure
+    agent.
+    """
+
+    def __init__(self, agent_id: str, seed=None, sell_markup: float = 0.2,
+                 buy_discount: float = 0.2, target_inventory: float = 5.0) -> None:
+        super().__init__(agent_id, seed)
+        self._sell_markup = sell_markup
+        self._buy_discount = buy_discount
+        self._target_inventory = target_inventory
+
+    def decide(self, obs: dict) -> GTBAction:
+        if obs.get("frozen"):
+            return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+        inv = obs.get("inventory", {})
+        wood = inv.get(ResourceType.WOOD.value, 0.0)
+        stone = inv.get(ResourceType.STONE.value, 0.0)
+        coin = inv.get(ResourceType.COIN.value, 0.0)
+        step = obs.get("step", 0)
+        # Round-robin: sell wood on even steps, sell stone on odd steps,
+        # buy if inventory is low and coin is plentiful.
+        if step % 2 == 0:
+            if wood > self._target_inventory:
+                return GTBAction(
+                    agent_id=self.agent_id,
+                    action_type=GTBActionType.TRADE_SELL,
+                    resource_type=ResourceType.WOOD,
+                    quantity=1.0,
+                    price=1.0 + self._sell_markup,
+                )
+            if coin >= 1.0:
+                return GTBAction(
+                    agent_id=self.agent_id,
+                    action_type=GTBActionType.TRADE_BUY,
+                    resource_type=ResourceType.WOOD,
+                    quantity=1.0,
+                    price=max(0.1, 1.0 - self._buy_discount),
+                )
+        else:
+            if stone > self._target_inventory:
+                return GTBAction(
+                    agent_id=self.agent_id,
+                    action_type=GTBActionType.TRADE_SELL,
+                    resource_type=ResourceType.STONE,
+                    quantity=1.0,
+                    price=1.0 + self._sell_markup,
+                )
+            if coin >= 1.0:
+                return GTBAction(
+                    agent_id=self.agent_id,
+                    action_type=GTBActionType.TRADE_BUY,
+                    resource_type=ResourceType.STONE,
+                    quantity=1.0,
+                    price=max(0.1, 1.0 - self._buy_discount),
+                )
+        # Default to gathering so we have inventory to post.
+        return GTBAction(
+            agent_id=self.agent_id,
+            action_type=GTBActionType.GATHER,
+        )

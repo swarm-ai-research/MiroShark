@@ -740,48 +740,51 @@ class GTBEnvironment:
             if collusion_boost > 0:
                 audit_prob = min(1.0, audit_prob + collusion_boost * cfg.audit_probability)
 
+            # Sample audit SELECTION first. If not selected, this worker is
+            # never observed — no event, no times_audited increment, no
+            # enforcement cost. Codex review noted the prior code
+            # incremented times_audited for every discrepant worker and
+            # only used audit_prob to decide caught-vs-miss, which made
+            # total_audits identical to the misreporter count regardless
+            # of audit_probability and broke experiments that tune the
+            # audit rate.
+            if self._rng.random() >= audit_prob:
+                continue
             worker.times_audited += 1
 
-            if self._rng.random() < audit_prob:
-                # Caught!
-                evaded_tax = self._tax_schedule.compute_tax(
-                    worker.gross_income_this_epoch
-                ) - self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
-                fine_owed = evaded_tax * cfg.fine_multiplier
-                coin_balance = worker.get_resource(ResourceType.COIN)
-                fine_paid = min(fine_owed, coin_balance)
-                worker.remove_resource(ResourceType.COIN, fine_paid)
-                worker.times_caught += 1
-                worker.total_fines += fine_paid
+            # Selected for audit: discrepancy is observed -> always caught.
+            evaded_tax = self._tax_schedule.compute_tax(
+                worker.gross_income_this_epoch
+            ) - self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
+            fine_owed = evaded_tax * cfg.fine_multiplier
+            coin_balance = worker.get_resource(ResourceType.COIN)
+            fine_paid = min(fine_owed, coin_balance)
+            worker.remove_resource(ResourceType.COIN, fine_paid)
+            worker.times_caught += 1
+            worker.total_fines += fine_paid
 
-                events.append(GTBEvent(
-                    event_type="audit_caught", epoch=self._current_epoch,
-                    agent_id=agent_id,
-                    details={
-                        "discrepancy": discrepancy,
-                        "evaded_tax": evaded_tax,
-                        "fine_owed": fine_owed,
-                        "fine": fine_paid,
-                        "shortfall": fine_owed - fine_paid,
-                        "times_caught": worker.times_caught,
-                    },
-                ))
+            events.append(GTBEvent(
+                event_type="audit_caught", epoch=self._current_epoch,
+                agent_id=agent_id,
+                details={
+                    "discrepancy": discrepancy,
+                    "evaded_tax": evaded_tax,
+                    "fine_owed": fine_owed,
+                    "fine": fine_paid,
+                    "shortfall": fine_owed - fine_paid,
+                    "times_caught": worker.times_caught,
+                },
+            ))
 
-                # Freeze on repeat offenders
-                if cfg.freeze_on_repeat and worker.times_caught >= cfg.freeze_after_n_catches:
-                    self._frozen_agents[agent_id] = (
-                        self._current_epoch + cfg.freeze_duration_epochs
-                    )
-                    events.append(GTBEvent(
-                        event_type="freeze", epoch=self._current_epoch,
-                        agent_id=agent_id,
-                        details={"until_epoch": self._current_epoch + cfg.freeze_duration_epochs},
-                    ))
-            else:
+            # Freeze on repeat offenders
+            if cfg.freeze_on_repeat and worker.times_caught >= cfg.freeze_after_n_catches:
+                self._frozen_agents[agent_id] = (
+                    self._current_epoch + cfg.freeze_duration_epochs
+                )
                 events.append(GTBEvent(
-                    event_type="audit_miss", epoch=self._current_epoch,
+                    event_type="freeze", epoch=self._current_epoch,
                     agent_id=agent_id,
-                    details={"discrepancy": discrepancy},
+                    details={"until_epoch": self._current_epoch + cfg.freeze_duration_epochs},
                 ))
 
         # False-positive pass: audit honest agents flagged by collusion boost.

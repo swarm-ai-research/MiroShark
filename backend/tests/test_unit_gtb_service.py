@@ -420,6 +420,64 @@ class TestDeepOverrideMerge:
         assert len(svc._policies) == 2
 
 
+class TestAuditSelection:
+    """Regression: audit_probability must control *selection* (not
+    catch-given-selected), so total_audits reflects actual audit rate.
+    """
+
+    def test_audit_probability_zero_yields_no_audits(self, gtb_modules):
+        svc_mod, _ = gtb_modules
+        from worlds.gather_trade_build.config import GTBConfig
+
+        cfg = GTBConfig.from_dict({
+            "misreporting": {"enabled": True, "audit_probability": 0.0,
+                             "risk_based_audit_multiplier": 0.0,
+                             "fine_multiplier": 2.0},
+        })
+        svc = svc_mod.GTBWorldService(
+            config=cfg,
+            agent_specs=[{"policy": "evasive", "count": 4,
+                          "underreport_fraction": 0.5}],
+            steps_per_epoch=2, seed=11,
+        )
+        for w in svc._env.workers.values():
+            w.gross_income_this_epoch = 8.0
+            w.reported_income_this_epoch = 4.0
+        svc.step(); svc.step()  # close epoch 0
+        # Under the prior bug every discrepant worker was counted as
+        # audited regardless of probability; under the fix none are.
+        for w in svc._env.workers.values():
+            assert w.times_audited == 0, (
+                f"audit_prob=0 should leave times_audited at 0, got {w.times_audited}"
+            )
+            assert w.times_caught == 0
+
+    def test_audit_probability_one_audits_every_misreporter(self, gtb_modules):
+        svc_mod, _ = gtb_modules
+        from worlds.gather_trade_build.config import GTBConfig
+
+        cfg = GTBConfig.from_dict({
+            "misreporting": {"enabled": True, "audit_probability": 1.0,
+                             "risk_based_audit_multiplier": 0.0,
+                             "fine_multiplier": 2.0},
+        })
+        svc = svc_mod.GTBWorldService(
+            config=cfg,
+            agent_specs=[{"policy": "evasive", "count": 4,
+                          "underreport_fraction": 0.5}],
+            steps_per_epoch=2, seed=13,
+        )
+        for w in svc._env.workers.values():
+            w.gross_income_this_epoch = 8.0
+            w.reported_income_this_epoch = 4.0
+        svc.step(); svc.step()
+        for w in svc._env.workers.values():
+            assert w.times_audited == 1, (
+                f"audit_prob=1 should audit (and catch) every misreporter, got {w.times_audited}"
+            )
+            assert w.times_caught == 1
+
+
 class TestRegistry:
     def test_registry_round_trip(self, gtb_modules):
         svc_mod, _ = gtb_modules

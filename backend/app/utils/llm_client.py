@@ -71,6 +71,45 @@ def _phase_from_prompt_type(prompt_type: str) -> str:
     return _PROMPT_TYPE_PHASES.get(prompt_type, "")
 
 
+def _extract_outermost_json(text: str) -> Optional[str]:
+    """Greedy depth-counting extractor for the first balanced {...} or [...]
+    block in ``text``. Returns None if no balanced block exists.
+
+    Used as a recovery path in chat_json() when the model wraps its JSON in
+    prose / unmatched fences / explanation text. Skips over strings so braces
+    inside string literals don't throw off the depth count.
+    """
+    open_chars = {"{": "}", "[": "]"}
+    for i, ch in enumerate(text):
+        if ch not in open_chars:
+            continue
+        target = open_chars[ch]
+        depth = 0
+        in_string = False
+        escape = False
+        for j in range(i, len(text)):
+            c = text[j]
+            if in_string:
+                if escape:
+                    escape = False
+                elif c == "\\":
+                    escape = True
+                elif c == '"':
+                    in_string = False
+                continue
+            if c == '"':
+                in_string = True
+                continue
+            if c == ch:
+                depth += 1
+            elif c == target:
+                depth -= 1
+                if depth == 0:
+                    return text[i:j + 1]
+        return None  # opened but never closed
+    return None
+
+
 def create_llm_client(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -417,4 +456,15 @@ class LLMClient:
         try:
             return json.loads(cleaned_response)
         except json.JSONDecodeError:
+            # Fallback: some models (notably Gemini 2.5-flash) wrap the
+            # object in prose / mixed whitespace the fence-strip regex
+            # can't catch. Greedy-find the outermost balanced {...} or
+            # [...] block by depth-counting and retry. Only fires on
+            # the failure path so clean responses are unaffected.
+            extracted = _extract_outermost_json(cleaned_response)
+            if extracted is not None:
+                try:
+                    return json.loads(extracted)
+                except json.JSONDecodeError:
+                    pass
             raise ValueError(f"Invalid JSON format returned by LLM: {cleaned_response}")

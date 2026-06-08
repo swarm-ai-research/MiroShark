@@ -14,8 +14,11 @@ mcp_bp = Blueprint('mcp', __name__)
 docs_bp = Blueprint('docs', __name__)
 feed_bp = Blueprint('feed', __name__)
 countries_bp = Blueprint('countries', __name__)
+gtb_bp = Blueprint('gtb', __name__)
 
 from . import graph  # noqa: E402, F401
+from . import gtb  # noqa: E402, F401
+from .sim_dispatcher import sim_dispatcher_bp  # noqa: E402, F401
 from . import simulation  # noqa: E402, F401
 from . import report  # noqa: E402, F401
 from . import templates  # noqa: E402, F401

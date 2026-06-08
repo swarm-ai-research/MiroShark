@@ -39,6 +39,10 @@ _SYSTEM_PROMPT = """You are a worker in a gather-trade-build economy.
 Each tick you choose ONE action that maximizes your long-run utility:
 post-tax income, energy budget, and house ownership.
 
+RESPONSE FORMAT — STRICT. Reply with a single raw JSON object. No
+markdown code fences. No commentary before or after. No leading text.
+Start your reply with {{ and end with }}. Anything else will be rejected.
+
 Mechanics in one paragraph:
 - Move on a grid to find wood / stone tiles, GATHER to collect them.
 - BUILD a house on an empty cell adjacent to you (costs wood+stone, pays
@@ -192,7 +196,7 @@ class LLMWorkerPolicy:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ]
-            raw = llm.chat_json(messages=messages, temperature=self._temperature, max_tokens=300)
+            raw = llm.chat_json(messages=messages, temperature=self._temperature, max_tokens=2048)
             return _parse_action(self._agent_id, raw)
         except Exception as e:
             logger.warning(
@@ -204,6 +208,11 @@ class LLMWorkerPolicy:
 
 _BATCH_SYSTEM_PROMPT = """You are the decision layer for {n} workers in a
 gather-trade-build economy. For EACH worker, choose ONE action this tick.
+
+RESPONSE FORMAT — STRICT. Reply with a single raw JSON object whose keys
+are agent_ids and whose values are action objects. No markdown code
+fences. No commentary before or after. No leading text. Start your
+reply with {{ and end with }}. Anything else will be rejected.
 
 Mechanics: move on a grid to find wood / stone, GATHER to collect, BUILD a
 house (costs wood+stone, pays income/step), TRADE_BUY / TRADE_SELL wood or
@@ -244,7 +253,7 @@ class BatchLLMDriver:
         personas: Optional[Dict[str, Dict[str, Any]]] = None,
         llm_client: Any = None,
         temperature: float = 0.4,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
     ) -> None:
         self._agent_ids = list(agent_ids or [])
         self._personas = personas or {}

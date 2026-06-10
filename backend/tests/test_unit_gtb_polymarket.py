@@ -72,7 +72,7 @@ class TestEnvelopeShape:
         payload = gtb_poly.compute_gtb_polymarket(
             _state([_M("gtb-0000", "Will welfare > 3?")]), sim_id="demo",
         )
-        assert payload["schema_version"] == "1"
+        assert payload["schema_version"] == "1.1"
         assert payload["simulation_id"] == "demo"
         assert len(payload["markets"]) == 1
         env = payload["markets"][0]
@@ -156,3 +156,75 @@ class TestGuards:
 
     def test_missing_markets_block_returns_none(self, gtb_poly):
         assert gtb_poly.compute_gtb_polymarket({"epoch": 0}, sim_id="demo") is None
+
+
+class TestConfidenceSource:
+    def test_no_stakes_is_tagged(self, gtb_poly):
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([_M("gtb-0000", "Q")]), sim_id="demo",
+        )
+        assert payload["markets"][0]["confidence_source"] == "no_stakes"
+
+    def test_one_sided_pile_on_is_tagged(self, gtb_poly):
+        stakes = {"gtb-0000": [
+            {"agent_id": "w0", "side": "yes", "amount": 5.0, "epoch": 1, "market_id": "gtb-0000"},
+            {"agent_id": "w1", "side": "yes", "amount": 3.0, "epoch": 1, "market_id": "gtb-0000"},
+        ]}
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([_M("gtb-0000", "Q")], stakes_by_market=stakes), sim_id="demo",
+        )
+        assert payload["markets"][0]["confidence_source"] == "one_sided"
+
+    def test_two_sided_real_forecast_is_tagged(self, gtb_poly):
+        stakes = {"gtb-0000": [
+            {"agent_id": "w0", "side": "yes", "amount": 4.0, "epoch": 1, "market_id": "gtb-0000"},
+            {"agent_id": "w1", "side": "no",  "amount": 2.0, "epoch": 1, "market_id": "gtb-0000"},
+        ]}
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([_M("gtb-0000", "Q")], stakes_by_market=stakes), sim_id="demo",
+        )
+        assert payload["markets"][0]["confidence_source"] == "two_sided"
+
+    def test_resolved_market_is_tagged(self, gtb_poly):
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([], resolved_markets=[_M("gtb-0001", "Q", status="yes", rv=4.2, re=3)]),
+            sim_id="demo",
+        )
+        assert payload["markets"][0]["confidence_source"] == "resolved"
+
+
+class TestSchemaValidation:
+    def test_compute_output_validates_against_schema(self, gtb_poly):
+        stakes = {"gtb-0000": [
+            {"agent_id": "w0", "side": "yes", "amount": 4.0, "epoch": 1, "market_id": "gtb-0000"},
+            {"agent_id": "w1", "side": "no",  "amount": 2.0, "epoch": 1, "market_id": "gtb-0000"},
+        ]}
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state(
+                [_M("gtb-0000", "Open"), _M("gtb-0001", "No stakes")],
+                resolved_markets=[_M("gtb-0002", "Done", status="yes", rv=4.2, re=3)],
+                stakes_by_market=stakes,
+            ),
+            sim_id="demo",
+        )
+        gtb_poly.validate_payload(payload)  # raises on mismatch
+
+    def test_validate_rejects_unknown_confidence_source(self, gtb_poly):
+        from jsonschema import ValidationError
+
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([_M("gtb-0000", "Q")]), sim_id="demo",
+        )
+        payload["markets"][0]["confidence_source"] = "bogus"
+        with pytest.raises(ValidationError):
+            gtb_poly.validate_payload(payload)
+
+    def test_validate_rejects_old_schema_version(self, gtb_poly):
+        from jsonschema import ValidationError
+
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([_M("gtb-0000", "Q")]), sim_id="demo",
+        )
+        payload["schema_version"] = "1"
+        with pytest.raises(ValidationError):
+            gtb_poly.validate_payload(payload)

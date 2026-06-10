@@ -43,12 +43,17 @@ threshold`).*
    tax revenue by 2.1%; going past 5% then lowers it. Above 15%, tax
    revenue plateaus around 412 ± 4 (down 9.4% from the peak).
 
-2. **Welfare is monotonically DECREASING in audit_probability through
-   the whole range.** Welfare drops from 72.19 (no audits) to 64.64
-   (95% audits) — **a 10.5% welfare loss from over-policing.** There
-   is no welfare peak inside the policy range; the optimum is "do not
-   audit at all" if you accept welfare as your objective. Striking
-   result.
+2. **Welfare falls steeply as audit_probability rises to ~0.2, then
+   plateaus — every audited cell from 0.05 up sits below the no-audit
+   baseline.** Welfare drops from 72.19 (no audits) to a trough of
+   63.75 at 20% audits — **a 10.5% peak-to-trough welfare loss from
+   over-policing** — then flattens around 64.5–64.8 through 95%. The
+   bounce above the trough (63.75 at 0.20 → 64.77 at 0.30) is small
+   relative to seed spread (per-cell p10–p90 spans roughly 42–85), so
+   the defensible claim is "decreasing up to audit saturation, flat
+   after", not "monotone-decreasing across the whole range". There is
+   still no welfare peak inside the policy range; the optimum is "do
+   not audit at all" if welfare is your objective. Striking result.
 
 3. **Catches don't collapse — they grow slowly to a ceiling of ~1.5
    per run.** With 4 evasive workers × 30 epochs = up to 120 possible

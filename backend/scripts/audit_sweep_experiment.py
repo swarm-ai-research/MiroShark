@@ -12,19 +12,19 @@ cells × 100 seeds × 30 epochs. Writes:
 
 Findings (with default fine_multiplier=2.0, underreport=0.5):
 
-* The naive expected-value calculation says evasion is +EV up to
-  audit_probability=0.5 (fine_multiplier × catch_prob == 1.0 only
-  there). The actual sim shows catches collapse toward zero by
-  audit_probability=0.2, because the EvasiveWorkerPolicy ALSO
-  reasons about risk — once selection is high enough, it stops
-  reporting under, and the planner can't catch anyone.
-* Welfare is monotonically DECREASING in audit_probability, despite
-  enforcement intuitively being "good". With aggressive auditing,
-  workers spend more time being audited and less time producing;
-  total tax revenue also falls.
-* The sweet spot under default parameters is around
-  audit_probability=0.05-0.10 — low enough to keep workers free to
-  produce, high enough to deter the largest evasions.
+* Welfare falls steeply as audit_probability rises to ~0.2 (72.19 →
+  63.75, a 10.5% peak-to-trough loss), then plateaus around 64.5–64.8
+  through 0.95. The small bounce above the trough is inside seed
+  noise. Every cell at audit_probability >= 0.05 sits below the
+  no-audit baseline; there is no welfare peak inside the policy range.
+* Tax revenue is Laffer-shaped, peaking at audit_probability=0.025 —
+  far below the naive 0.5 EV-breakeven.
+* Catches do NOT collapse at high enforcement — EvasiveWorkerPolicy
+  keeps retrying, and catches plateau around 1.5 per run.
+
+The narrative interpretation lives in runs/audit_sweep/FINDINGS.md
+(hand-curated); this docstring is a summary, FINDINGS.md is the
+source of truth.
 """
 
 from __future__ import annotations

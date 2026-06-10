@@ -1,0 +1,56 @@
+{
+  "strategy": "kelly",
+  "n_seeds": 5,
+  "summary": [
+    {
+      "seed": 0,
+      "accepted": 0,
+      "rejected": 0,
+      "wins": 0,
+      "losses": 0,
+      "refunds": 0,
+      "gross_payout": 0,
+      "final_coin": 99.2645834744159
+    },
+    {
+      "seed": 1,
+      "accepted": 0,
+      "rejected": 0,
+      "wins": 0,
+      "losses": 0,
+      "refunds": 0,
+      "gross_payout": 0,
+      "final_coin": 113.5336255849571
+    },
+    {
+      "seed": 2,
+      "accepted": 0,
+      "rejected": 0,
+      "wins": 0,
+      "losses": 0,
+      "refunds": 0,
+      "gross_payout": 0,
+      "final_coin": 117.34388875298224
+    },
+    {
+      "seed": 3,
+      "accepted": 0,
+      "rejected": 0,
+      "wins": 0,
+      "losses": 0,
+      "refunds": 0,
+      "gross_payout": 0,
+      "final_coin": 99.25220196300602
+    },
+    {
+      "seed": 4,
+      "accepted": 0,
+      "rejected": 0,
+      "wins": 0,
+      "losses": 0,
+      "refunds": 0,
+      "gross_payout": 0,
+      "final_coin": 131.69748485819846
+    }
+  ]
+}

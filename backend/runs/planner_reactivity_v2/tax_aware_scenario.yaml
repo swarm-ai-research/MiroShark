@@ -1,0 +1,110 @@
+agents:
+- count: 5
+  policy: tax_aware
+  skill_build: 1.0
+  skill_gather: 1.0
+- count: 2
+  policy: tax_aware
+  skill_build: 1.2
+  skill_gather: 1.5
+- count: 2
+  policy: gaming
+  shift_fraction: 0.25
+  skill_gather: 1.0
+- count: 2
+  policy: evasive
+  skill_gather: 1.0
+  underreport_fraction: 0.3
+- coalition_id: cartel_alpha
+  count: 3
+  policy: collusive
+  skill_gather: 1.0
+description: 'Full AI Economist scenario with GTB gridworld, bilevel tax policy, income
+  bunching, misreporting/evasion, audits, and collusion detection.
+
+  '
+domain:
+  build:
+    income_per_house_per_step: 1.0
+    max_houses_per_agent: 10
+    stone_cost: 3.0
+    wood_cost: 3.0
+  collusion:
+    detection_window_steps: 20
+    enabled: true
+    max_coalition_size: 4
+    min_coalition_size: 2
+    response_audit_multiplier: 2.0
+    response_stake_increase: 1.5
+    response_trade_restriction_epochs: 1
+    similarity_threshold: 0.7
+    suspicion_score_threshold: 0.6
+  energy_cost_build: 2.0
+  energy_cost_gather: 1.0
+  energy_cost_move: 1.0
+  energy_cost_trade: 0.5
+  energy_per_step: 10.0
+  gaming:
+    bunching_bin_width: 1.0
+    bunching_detection_enabled: true
+    gaming_cost_fraction: 0.05
+    income_shifting_enabled: true
+    max_shift_fraction_per_epoch: 0.3
+  map:
+    height: 15
+    resource_max_amount: 5.0
+    resource_regen_rate: 0.1
+    stone_density: 0.15
+    width: 15
+    wood_density: 0.2
+  market:
+    enabled: true
+    price_ceiling: 100.0
+    price_floor: 0.1
+    transaction_fee_rate: 0.02
+  misreporting:
+    audit_probability: 0.2
+    enabled: true
+    fine_multiplier: 2.0
+    freeze_after_n_catches: 3
+    freeze_duration_epochs: 2
+    freeze_on_repeat: true
+    max_underreport_fraction: 0.5
+    reputation_penalty_per_catch: 0.1
+    risk_based_audit_multiplier: 1.5
+  planner:
+    exploration_rate: 0.1
+    ineq_weight: 0.5
+    learning_rate: 0.01
+    objective: welfare
+    planner_type: heuristic
+    prod_weight: 1.0
+    update_interval_epochs: 1
+  taxation:
+    allow_non_monotone: false
+    brackets:
+    - rate: 0.1
+      threshold: 0.0
+    - rate: 0.2
+      threshold: 10.0
+    - rate: 0.35
+      threshold: 25.0
+    - rate: 0.45
+      threshold: 50.0
+    damping: 0.3
+    schedule_family: piecewise
+    smoothing: 0.0
+    update_interval_epochs: 1
+  type: gather_trade_build
+motif: ai_economist
+outputs:
+  event_log: logs/ai_economist_events.jsonl
+  metrics_csv: logs/ai_economist_metrics.csv
+scenario_id: ai_economist_full
+simulation:
+  n_epochs: 20
+  seed: 42
+  steps_per_epoch: 15
+success_criteria:
+  min_agents: 10
+  min_epochs: 20

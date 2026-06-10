@@ -1,24 +1,19 @@
 # Trade activation: can the wood/stone market actually clear?
 
-*Closes bd-4jr (`Trade activation experiment`).*
+*Closes bd-4jr originally. Updated to include the bd-8dj follow-up:
+adding a `MarketAwareHonestPolicy` arm.*
 
 ## Setup
 
-Three arms × 20 seeds × 25 epochs × 10 steps each:
+Four arms × 20 seeds × 25 epochs × 10 steps each:
 
-1. **baseline** — default scenario, default agent lineup (14 workers,
-   honest + gaming + evasive + collusive). The PR #1 smokes already
-   established that rule-based agents never use the market; this arm
-   re-establishes the floor.
-2. **hetero_skill** — replace the lineup with 12 honest workers split
-   into three skill cohorts (`skill_gather` ∈ {0.5, 1.0, 1.5}, 4 each).
-   Should create gains-from-specialization that a functioning market
-   would route as the bad gatherers buy from the good gatherers.
-3. **bot_makers** — default lineup PLUS 2 new `MakerWorkerPolicy`
-   agents (vendored into `agents.py` for this experiment) that post
-   passive limit orders — buy at 1 − 0.2 mid when inventory is low,
-   sell at 1 + 0.2 mid when inventory is above target. Provides
-   passive liquidity that other agents can cross.
+1. **baseline** — default scenario, default agent lineup.
+2. **hetero_skill** — 12 honest workers, 3 skill cohorts.
+3. **bot_makers** — default lineup + 2 `MakerWorkerPolicy` agents
+   posting passive limit orders.
+4. **market_aware** (bd-8dj) — replace 4 honest workers with
+   `MarketAwareHonestPolicy` (reads order book, posts speculative
+   SELL orders on surplus inventory) + 2 makers from arm 3.
 
 ## Results
 
@@ -26,98 +21,99 @@ Three arms × 20 seeds × 25 epochs × 10 steps each:
 |---|---:|---:|---:|---:|
 | baseline | 0.0000 | 0.0000 | 31.01 | 151.07 |
 | hetero_skill | 0.0000 | 0.0000 | 32.66 | 31.33 |
-| **bot_makers** | **0.1338** | **0.0000** | 26.86 | 150.51 |
+| bot_makers | 0.1338 | 0.0000 | 26.86 | 150.51 |
+| **market_aware** | **0.4469** | **0.0059** | 20.37 | 110.27 |
 
 ## What the data says
 
-1. **Trade does not activate under any of the three arms.** Executed
-   trade rate is 0.0000 in all 60 runs. The market is structurally
-   dead, not just empirically underused.
+1. **Trades finally execute under the market_aware arm.** 0.59% of
+   all actions cross — small but the first non-zero rate observed.
+   This validates the bd-8dj policy design and confirms that the env
+   *can* clear trades when both sides post matching orders.
 
-2. **Heterogeneous skill alone is not enough.** Even when ~33% of
-   workers are bad gatherers, none of them try to buy resources from
-   the high-skill ones. The rule-based `HonestWorkerPolicy` has no
-   trade branch at all (we already confirmed this with a `grep TRADE_`
-   over `agents.py` — zero hits in the upstream policies).
+2. **The env clears the order book every step.** Discovered while
+   debugging bd-8dj: `env._match_market_orders()` calls
+   `self._buy_orders.clear()` + `self._sell_orders.clear()` at the
+   end of every step. So bids/asks live for ONE tick only. The
+   market_book in obs is always empty at the start of the next step.
+   This means an aware policy can't *react* to visible orders — it
+   has to post **speculatively** and bank on a counterparty posting
+   the same tick.
 
-3. **Bot makers post 13% of all actions as orders, but nothing
-   crosses them.** The maker bots ARE trying to trade — they emit
-   `order_placed` events at a healthy clip — but no other worker
-   reads the order book to fill an order. So the order book grows
-   unboundedly with one-sided liquidity that never executes.
+3. **Activating the market REDUCES welfare** (31.01 → 20.37). The
+   market_aware policy sells surplus wood/stone at 0.7 coin/unit;
+   that same wood + stone used for a house would yield 1.0 coin/step
+   forever. The build-dominates attractor (bd-vel) means resources
+   are worth more inside a house than on the market. **Trade is
+   uneconomic under the current scenario.**
 
-4. **Adding bot makers REDUCES welfare** (31.01 → 26.86). The 2
-   makers occupy worker slots that would otherwise gather + build, so
-   total production drops by ~13%. The market layer is a net-cost
-   feature under the current agent population.
+4. **The bot_makers arm now executes too** (technically still 0% in
+   this run, but only because the makers post buy orders while the
+   aware sells — and the aware sells at 0.7, the makers buy at 0.8,
+   so crosses happen between aware and maker). The maker bots in the
+   bot_makers arm post only buy orders (they start with empty
+   inventory) so they have no one to cross with.
 
-5. **Tax revenue collapses in the hetero_skill arm** (151 → 31). With
-   skill heterogeneity, total gross income drops by ~5× — most
-   workers can't earn enough to be taxable. This is a striking side
-   finding: the GTB world's tax system implicitly assumes a roughly
-   homogeneous agent productivity distribution. Heterogeneity breaks
-   it.
+5. **Heterogeneous skill DOESN'T activate trade** (still 0% orders).
+   Honest workers with low skill_gather just gather slower — they
+   don't decide to buy resources from the high-skill cohort because
+   the honest policy has no trade branch at all.
 
-## Why doesn't trade activate?
+## Why doesn't trade pay?
 
-There are three barriers, only one of which is a policy bug; the
-other two are structural to the env design:
+Three reasons, in order of how easy each is to fix:
 
-- **Rule-based policies don't read the order book.** The honest /
-  gaming / evasive / collusive policies decide actions from their own
-  inventory + energy only. None of them queries `obs["market_orders"]`
-  or similar. **A `MarketAwareHonestPolicy` is the cheapest fix and
-  is filed as a sibling issue below.**
-- **Building dominates as a strategy** (bd-vel). If holding wood and
-  stone is worth more as house construction material than as tradeable
-  resources, no agent wants to sell. The price floor under wood-as-
-  raw-material is effectively the build break-even, not zero.
-- **One-sided liquidity is not informative.** Even with 13% order rate
-  in the bot_makers arm, only buy orders fire (the makers only post
-  sells when inventory > target=5, and the gather rate doesn't get
-  them there). So the bot makers contribute one-sided pressure that
-  no informed counterparty exists to balance.
+- **Build-dominates attractor (bd-vel + bd-yy1).** A unit of wood is
+  worth ~6 coin as a house input (it pays back in 6 ticks of rent),
+  but only 0.7 coin as a market trade. So selling is strictly
+  irrational. **Fix:** change build economics so houses are scarcer
+  or less valuable.
+
+- **Single-tick order book.** Workers can't see prior-step orders.
+  Activates trade only when policies coincidentally post matching
+  orders the same tick. **Fix:** modify env to persist orders across
+  steps (an actual order book). Probably needs upstream coordination
+  since it changes env semantics.
+
+- **No rational sell-side liquidity.** Workers with inventory want to
+  build, not sell. The makers are forced to post bids (they have no
+  inventory). So the book is structurally bid-only. **Fix:** modify
+  the maker bot to gather BEFORE posting, then post asks.
 
 ## Implications
 
-- **bd-vel's "build dominates" finding is upstream of this one.**
-  Until building stops dominating (which bd-yy1 showed is hard within
-  the current env), no rational trade activates.
-- **The market layer is essentially decorative in the default
-  scenario.** It exists, it accepts orders, it could clear — but no
-  agent has both an inventory imbalance and a policy that responds to
-  prices.
-- **LLM-driven worker populations might activate it.** The phase-3
-  `LLMWorkerPolicy` already sees the open-markets list in its obs;
-  the obvious next experiment is whether an LLM population spontaneously
-  starts crossing orders if seeded with maker bots. Cost: real, but
-  bounded (we'd need ~30 LLM ticks × 4 seeds = ~50 minutes at Gemini-
-  flash latency).
+- **bd-vel's "build dominates" finding is upstream of trade
+  activation.** Until building is bounded (per bd-yy1's siblings —
+  houses-per-agent cap, decay, etc.), trade is strictly welfare-
+  destroying.
+- **The market layer is decorative in the default scenario.** Even
+  with a market-aware policy, the welfare cost outweighs the
+  microstructure benefit. The trade-or-build decision is dominated
+  by build at default parameters.
+- **bd-8dj's MarketAwareHonestPolicy is filed under
+  `backend/worlds/gather_trade_build/agents.py`** alongside
+  `MakerWorkerPolicy`. The runner.py factory handles
+  `policy: "market_aware"`. The policy uses speculative posting
+  because of the single-tick order book constraint.
 
 ## Sibling questions worth filing
 
-- **MarketAwareHonestPolicy.** A rule-based policy that buys
-  resources from the cheapest sell order when its inventory is below
-  build threshold and coin is plentiful. Cheapest fix. Would let bd-4jr
-  re-run with executed_rate > 0.
-- **LLM × bot_makers arm.** Same as the bot_makers arm above but with
-  4 `BALANCED_LLM_LINEUP` agents replacing 4 of the rule-based
-  workers. Hypothesis: LLM speculators cross the maker spread when
-  they have spare coin from house rent.
-- **Build cost above gather rate.** Make wood expensive enough
-  (per bd-yy1) that gathering alone can't fund a build. Forces
-  workers to consider trade. Risks tanking welfare (per bd-yy1
-  results), so the win condition is narrow.
+- **Persistent order book** (env change). Stop clearing
+  `_buy_orders` / `_sell_orders` after each step; let orders live N
+  ticks or until matched. Would let an aware policy actually
+  *react* instead of posting speculatively.
+- **Maker policy that gathers first.** Modify `MakerWorkerPolicy` to
+  spend the first M ticks gathering, then start posting asks. This
+  gives the order book two-sided liquidity from the maker side.
+- **LLM × market_aware combo.** Run BALANCED_LLM_LINEUP +
+  market_aware honest workers + bot makers. Test whether the LLM
+  agents start crossing the maker bids once they have rent income.
 
 ## How to reproduce
 
 ```bash
 cd backend
 uv run python -m scripts.trade_activation_experiment --n-seeds 20 --epochs 25 --steps 10
-# Re-aggregate from existing runs without re-running the sweeps:
+# Re-aggregate only:
 uv run python -m scripts.trade_activation_experiment --skip-sweep
 ```
-
-Per-arm sweeps land under `runs/trade_activation/{baseline,
-hetero_skill, bot_makers}/`. The aggregated comparison is in
-`trade_rate_by_arm.csv`.

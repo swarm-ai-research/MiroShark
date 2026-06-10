@@ -79,7 +79,7 @@ def _drive_one_seed(seed: int, n_epochs: int, steps_per_epoch: int) -> List[Tupl
     """
     overrides = {
         "simulation": {"steps_per_epoch": steps_per_epoch, "seed": seed},
-        "agents": gtb_llm_personas.BALANCED_LLM_LINEUP,
+        "agents": gtb_llm_personas.STAKING_LINEUP,
     }
     reg = gtb_service.GTBWorldRegistry()
     sim_id = f"mit-{seed}"
@@ -89,18 +89,19 @@ def _drive_one_seed(seed: int, n_epochs: int, steps_per_epoch: int) -> List[Tupl
     snapshot_at_creation: Dict[str, Dict] = {}
     pending_markets = set()
 
+    # Track the LATEST open snapshot per market_id (overwritten each
+    # tick). When the market resolves we use the last open snapshot —
+    # i.e., the most-informed yes_probability a consumer would have
+    # seen before settlement. Capturing-at-creation misses the
+    # stake-accumulation arc.
     total_ticks = n_epochs * steps_per_epoch
     for tick in range(total_ticks):
-        # Capture envelope snapshot ONCE per market_id, the first time
-        # we see it after creation. The envelope at-creation is what a
-        # downstream consumer would size positions against.
         payload = gtb_polymarket.compute_gtb_polymarket(svc.state(), sim_id)
         if payload:
             for env in payload["markets"]:
-                mid = env["market_id"]
-                if env["status"] == "open" and mid not in snapshot_at_creation:
-                    snapshot_at_creation[mid] = dict(env)
-                    pending_markets.add(mid)
+                if env["status"] == "open":
+                    snapshot_at_creation[env["market_id"]] = dict(env)
+                    pending_markets.add(env["market_id"])
         svc.step()
 
     # Walk resolved markets to find outcomes.
@@ -112,6 +113,11 @@ def _drive_one_seed(seed: int, n_epochs: int, steps_per_epoch: int) -> List[Tupl
         if snap is None or m["status"] not in ("yes", "no"):
             continue
         pairs.append((snap, m["status"]))
+    # Also diagnostic: count total stake_placed events for this seed.
+    stake_events = [h for h in state.get("stakes", {}).get("history", [])
+                    if h.get("event") == "placed"]
+    if stake_events:
+        logger.info("  seed %d placed %d stakes", seed, len(stake_events))
     reg.stop(sim_id)
     return pairs
 

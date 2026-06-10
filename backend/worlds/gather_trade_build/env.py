@@ -222,6 +222,11 @@ class GTBEnvironment:
             "visible_cells": visible,
             "frozen": agent_id in self._frozen_agents,
             "market_info": self._market_info(),
+            # Top-of-book snapshot for market-aware policies (bd-8dj).
+            # Per-resource: 3 lowest asks + 3 highest bids, oldest first
+            # within the same price. Empty lists if no orders on that
+            # side. Policies that don't read the order book ignore this.
+            "market_book": self._market_book_snapshot(),
         }
 
     def _market_info(self) -> Dict[str, Any]:
@@ -241,6 +246,26 @@ class GTBEnvironment:
                 "volume_this_epoch": self._volume_this_epoch.get(key, 0.0),
             }
         return info
+
+    def _market_book_snapshot(self) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+        """Compact top-of-book view by resource type, for policy obs."""
+        snap: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+        for rt in (ResourceType.WOOD, ResourceType.STONE):
+            sells = [o for o in self._sell_orders if o.resource_type == rt]
+            buys = [o for o in self._buy_orders if o.resource_type == rt]
+            sells = sorted(sells, key=lambda o: (o.price_per_unit, o.step))[:3]
+            buys = sorted(buys, key=lambda o: (-o.price_per_unit, o.step))[:3]
+            snap[rt.value] = {
+                "asks": [
+                    {"agent_id": o.agent_id, "quantity": o.quantity, "price": o.price_per_unit}
+                    for o in sells
+                ],
+                "bids": [
+                    {"agent_id": o.agent_id, "quantity": o.quantity, "price": o.price_per_unit}
+                    for o in buys
+                ],
+            }
+        return snap
 
     # ------------------------------------------------------------------
     # Step execution

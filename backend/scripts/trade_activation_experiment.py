@@ -79,6 +79,30 @@ def _write_arm_scenarios(scratch: Path) -> Dict[str, Path]:
         yaml.safe_dump(makers, f)
     out["bot_makers"] = p
 
+    # Arm 4 (bd-8dj): market_aware honest workers + 2 makers.
+    # Replaces 4 of the default honest workers with market_aware variants
+    # that read the order book and cross spreads when the price is right.
+    aware = json.loads(json.dumps(base))
+    aware_agents = []
+    for spec in base["agents"]:
+        if spec.get("policy") == "honest":
+            count = spec.get("count", 1)
+            aware_count = min(4, count)
+            if aware_count > 0:
+                aware_agents.append({**spec, "policy": "market_aware", "count": aware_count})
+            if count - aware_count > 0:
+                aware_agents.append({**spec, "count": count - aware_count})
+        else:
+            aware_agents.append(spec)
+    aware_agents.append(
+        {"policy": "maker", "count": 2, "sell_markup": 0.2, "buy_discount": 0.2, "target_inventory": 5.0},
+    )
+    aware["agents"] = aware_agents
+    p = scratch / "market_aware.yaml"
+    with open(p, "w") as f:
+        yaml.safe_dump(aware, f)
+    out["market_aware"] = p
+
     return out
 
 
@@ -186,7 +210,7 @@ def main(argv=None) -> None:
             _run_arm(scenario_path, arm_out, args.n_seeds, args.epochs, args.steps)
             arm_dirs[arm_name] = arm_out
     else:
-        for name in ("baseline", "hetero_skill", "bot_makers"):
+        for name in ("baseline", "hetero_skill", "bot_makers", "market_aware"):
             arm_dirs[name] = args.output / name
 
     rows = _trade_rate_by_arm(arm_dirs)

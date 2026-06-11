@@ -45,14 +45,21 @@ Start your reply with {{ and end with }}. Anything else will be rejected.
 
 Mechanics in one paragraph:
 - Move on a grid to find wood / stone tiles, GATHER to collect them.
-- BUILD a house on an empty cell adjacent to you (costs wood+stone, pays
-  income each step thereafter).
+- BUILD a house on the cell you are standing on. The cell must not
+  already have a house. Costs wood+stone; the house pays income each
+  step thereafter.
 - Trade in the central market: TRADE_BUY or TRADE_SELL wood/stone at a
-  price you set.
+  price you set. `market_prices` shows the last trade price, best
+  bid/ask on the book, and volume — buy below your value, sell above;
+  undercut the best ask to fill faster.
 - Income is taxed at epoch end via piecewise brackets. You may SHIFT_INCOME
   to defer earnings into a later epoch, or MISREPORT a fraction (risks
-  audit, fine, and reputation loss).
-- Energy depletes per action; conserve it.
+  audit, fine, and reputation loss). `last_epoch` shows what you earned,
+  reported, and paid last epoch — use it to judge whether your tax
+  strategy is working.
+- Energy depletes per action and spent energy is labor effort, which
+  carries disutility. Resting (noop) is free: work only while the
+  post-tax return on the next action beats the effort it costs.
 
 Return JSON ONLY. Schema:
 {action_schema}
@@ -80,6 +87,7 @@ def _render_obs(obs: Dict[str, Any]) -> str:
         "position": obs.get("position"),
         "inventory": obs.get("inventory"),
         "energy": obs.get("energy"),
+        "effort_this_epoch": obs.get("effort_this_epoch"),
         "gross_income_this_epoch": obs.get("gross_income"),
         "deferred_income": obs.get("deferred_income"),
         "houses_built": obs.get("houses_built"),
@@ -87,6 +95,8 @@ def _render_obs(obs: Dict[str, Any]) -> str:
         "step": obs.get("step"),
         "frozen": obs.get("frozen"),
         "tax_brackets": obs.get("tax_schedule", {}).get("brackets", []),
+        "market_prices": obs.get("market_info"),
+        "last_epoch": obs.get("last_epoch"),
         "visible_resources": res_cells[:10],
         "visible_cells_count": len(visible),
         "open_markets": obs.get("open_markets", []),
@@ -215,10 +225,13 @@ fences. No commentary before or after. No leading text. Start your
 reply with {{ and end with }}. Anything else will be rejected.
 
 Mechanics: move on a grid to find wood / stone, GATHER to collect, BUILD a
-house (costs wood+stone, pays income/step), TRADE_BUY / TRADE_SELL wood or
-stone in the market at a price you set. Income is taxed at epoch end via
-piecewise brackets; SHIFT_INCOME defers earnings, MISREPORT under-reports
-(risks audit + fine). Energy depletes per action.
+house on the worker's current cell (must be house-free; costs wood+stone,
+pays income/step), TRADE_BUY / TRADE_SELL wood or stone in the market at a
+price you set (`market_prices` carries last trade price and best bid/ask).
+Income is taxed at epoch end via piecewise brackets; SHIFT_INCOME defers
+earnings, MISREPORT under-reports (risks audit + fine); `last_epoch` shows
+each worker's previous income/tax outcome. Energy depletes per action and
+is labor effort with disutility — resting is a legitimate choice.
 
 The payload also includes `open_markets` — binary YES/NO questions on the
 metric stream (welfare, Gini, production, tax revenue, bunching). Each
@@ -302,12 +315,15 @@ class BatchLLMDriver:
                             "position": obs.get("position"),
                             "inventory": obs.get("inventory"),
                             "energy": obs.get("energy"),
+                            "effort_this_epoch": obs.get("effort_this_epoch"),
                             "gross_income": obs.get("gross_income"),
                             "houses_built": obs.get("houses_built"),
                             "epoch": obs.get("epoch"),
                             "step": obs.get("step"),
                             "frozen": obs.get("frozen"),
                             "tax_brackets": obs.get("tax_schedule", {}).get("brackets", []),
+                            "market_prices": obs.get("market_info"),
+                            "last_epoch": obs.get("last_epoch"),
                             "visible_resources": [
                                 c for c in obs.get("visible_cells", []) if "resource" in c
                             ][:8],

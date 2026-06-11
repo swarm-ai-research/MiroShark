@@ -176,6 +176,10 @@ class GTBWorldService:
         # shifts happen mid-epoch; metrics must see them, as the
         # headless runner does)
         self._step_event_buffer: List[Any] = []
+        # Per-worker summary of the previous epoch, injected into
+        # observations so agents (LLM especially) can reason about how
+        # their tax strategy actually played out
+        self._last_epoch_worker_summary: Dict[str, Dict[str, Any]] = {}
         self._action_overrides: Dict[str, GTBAction] = {}
         self._step_in_epoch = 0
         from .gtb_markets import GTBMarketBook, GTBStakeBook
@@ -298,6 +302,7 @@ class GTBWorldService:
         """Env obs + open markets, so LLM agents can reason about how
         their actions push the metric stream toward open YES/NO questions."""
         obs = self._env.obs(agent_id)
+        obs["last_epoch"] = self._last_epoch_worker_summary.get(agent_id)
         obs["open_markets"] = [
             {
                 "market_id": m.market_id,
@@ -375,6 +380,21 @@ class GTBWorldService:
             ),
         )
         self._epoch_metrics.append(metrics)
+        self._last_epoch_worker_summary = {
+            aid: {
+                "gross_income": w.gross_income_this_epoch,
+                "reported_income": w.reported_income_this_epoch,
+                "tax_paid": w.tax_paid_this_epoch,
+                "effective_tax_rate": (
+                    w.tax_paid_this_epoch
+                    / max(w.reported_income_this_epoch, 1e-9)
+                ),
+                "effort": w.effort_this_epoch,
+                "times_audited_total": w.times_audited,
+                "times_caught_total": w.times_caught,
+            }
+            for aid, w in result.snapshot.items()
+        }
         metrics_dict = self._metrics_to_dict(metrics)
         # Resolve open markets and lazily seed new ones so there's
         # always something to bet on.

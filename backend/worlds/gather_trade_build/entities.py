@@ -108,6 +108,9 @@ class WorkerState:
     # Income shifting (deferred income account)
     deferred_income: float = 0.0
 
+    # Unpaid taxes/fines carried across epochs (taxation.debt_enabled)
+    tax_debt: float = 0.0
+
     # Houses built
     houses_built: int = 0
 

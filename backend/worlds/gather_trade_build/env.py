@@ -113,6 +113,12 @@ class GTBEnvironment:
         # Frozen agents (from audit penalties)
         self._frozen_agents: Dict[str, int] = {}  # agent_id -> unfreeze_epoch
 
+        # Treasury: taxes/fines/debt payments accumulate here and fund
+        # redistribution (taxation.redistribution) and treasury-mode house
+        # income (build.house_income_mode). With both off it just grows,
+        # mirroring the legacy "burned" semantics.
+        self._treasury = 0.0
+
         # Coin ledger: every mint/burn itemized by source so conservation
         # can be verified (sum of worker coin == minted - burned).
         self._coin_minted: Dict[str, float] = {}
@@ -338,11 +344,17 @@ class GTBEnvironment:
         worker.add_resource(cell.resource.resource_type, gathered)
         worker.energy -= self._config.energy_cost_gather
 
-        # Gathering generates income
-        income = gathered  # 1:1 income for gathering
-        worker.gross_income_this_epoch += income
-        worker.reported_income_this_epoch += income
-        worker.cumulative_income += income
+        if self._config.ledger_mode == "legacy":
+            # Legacy: gathering books taxable income 1:1 with no coin
+            # behind it (the income/coin gap in epoch_ledger events).
+            income = gathered
+            worker.gross_income_this_epoch += income
+            worker.reported_income_this_epoch += income
+            worker.cumulative_income += income
+        else:
+            # coin mode: gathering yields resources only; income arises
+            # when they are sold or when houses pay out.
+            income = 0.0
 
         return GTBEvent(
             event_type="gather", step=self._current_step,
@@ -531,13 +543,33 @@ class GTBEnvironment:
 
     def _distribute_house_income(self) -> List[GTBEvent]:
         events = []
+        if not self._houses:
+            return events
+
+        # treasury mode: payouts come out of collected taxes/fines instead
+        # of being minted; pro-rate when the treasury can't cover demand.
+        treasury_mode = self._config.build.house_income_mode == "treasury"
+        scale = 1.0
+        if treasury_mode:
+            demand = sum(
+                h.income_per_step for h in self._houses
+                if h.owner_id in self._workers
+            )
+            scale = min(1.0, self._treasury / demand) if demand > 0 else 0.0
+            if scale <= 0:
+                return events
+
         for house in self._houses:
             worker = self._workers.get(house.owner_id)
             if worker is None:
                 continue
-            income = house.income_per_step
+            income = house.income_per_step * scale
             worker.add_resource(ResourceType.COIN, income)
-            self._ledger_mint("house_income", income)
+            if treasury_mode:
+                self._treasury -= income
+                self._ledger_mint("house_income_treasury", income)
+            else:
+                self._ledger_mint("house_income", income)
             self._coin_earned_this_epoch[house.owner_id] = (
                 self._coin_earned_this_epoch.get(house.owner_id, 0.0) + income
             )
@@ -629,6 +661,19 @@ class GTBEnvironment:
                 seller.reported_income_this_epoch += total - fee
                 seller.cumulative_income += total - fee
 
+                if self._config.ledger_mode == "coin":
+                    # Purchases are an expense: income is net coin flow.
+                    # (compute_tax floors at 0 if an epoch nets negative.)
+                    buyer.gross_income_this_epoch -= total + fee
+                    buyer.reported_income_this_epoch -= total + fee
+                    buyer.cumulative_income -= total + fee
+                    # Mirror in the gap tracker so income == net coin
+                    # flow closes the epoch_ledger gap to zero.
+                    self._coin_earned_this_epoch[buy.agent_id] = (
+                        self._coin_earned_this_epoch.get(buy.agent_id, 0.0)
+                        - (total + fee)
+                    )
+
                 buy.quantity -= qty
                 sell.quantity -= qty
                 if buy.quantity <= 0:
@@ -677,13 +722,29 @@ class GTBEnvironment:
         events: List[GTBEvent] = []
 
         # 1. Collect taxes (only what can actually be paid)
+        debt_enabled = self._config.taxation.debt_enabled
         for agent_id, worker in self._workers.items():
-            tax = self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
             coin_balance = worker.get_resource(ResourceType.COIN)
+
+            # Outstanding debt from prior epochs is collected first.
+            debt_collected = 0.0
+            if debt_enabled and worker.tax_debt > 0:
+                debt_collected = min(worker.tax_debt, coin_balance)
+                worker.remove_resource(ResourceType.COIN, debt_collected)
+                self._ledger_burn("debt_payments", debt_collected)
+                self._treasury += debt_collected
+                worker.tax_debt -= debt_collected
+                coin_balance -= debt_collected
+
+            tax = self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
             actual_tax = min(tax, coin_balance)
             worker.remove_resource(ResourceType.COIN, actual_tax)
             self._ledger_burn("taxes", actual_tax)
+            self._treasury += actual_tax
             worker.tax_paid_this_epoch = actual_tax
+            shortfall = tax - actual_tax
+            if debt_enabled and shortfall > 0:
+                worker.tax_debt += shortfall
             events.append(GTBEvent(
                 event_type="tax", epoch=self._current_epoch,
                 agent_id=agent_id,
@@ -692,7 +753,9 @@ class GTBEnvironment:
                     "reported_income": worker.reported_income_this_epoch,
                     "tax_owed": tax,
                     "tax_paid": actual_tax,
-                    "shortfall": tax - actual_tax,
+                    "shortfall": shortfall,
+                    "debt_collected": debt_collected,
+                    "debt_outstanding": worker.tax_debt,
                     "effective_rate": actual_tax / max(worker.reported_income_this_epoch, 1e-9),
                 },
             ))
@@ -700,6 +763,21 @@ class GTBEnvironment:
         # 2. Audits
         audit_events = self._run_audits()
         events.extend(audit_events)
+
+        # 2b. Redistribute the treasury lump-sum (AI Economist semantics:
+        # collected revenue returns equally to all workers). Transfers are
+        # not taxable income.
+        if (self._config.taxation.redistribution == "lump_sum"
+                and self._treasury > 0 and self._workers):
+            share = self._treasury / len(self._workers)
+            for agent_id, worker in self._workers.items():
+                worker.add_resource(ResourceType.COIN, share)
+                events.append(GTBEvent(
+                    event_type="redistribution", epoch=self._current_epoch,
+                    agent_id=agent_id, details={"amount": share},
+                ))
+            self._ledger_mint("redistribution", self._treasury)
+            self._treasury = 0.0
 
         # 3. Unfreeze agents whose freeze expired
         to_unfreeze = [
@@ -733,6 +811,10 @@ class GTBEnvironment:
                 "discrepancy": ledger["discrepancy"],
                 "minted": ledger["minted"],
                 "burned": ledger["burned"],
+                "treasury": self._treasury,
+                "total_tax_debt": sum(
+                    w.tax_debt for w in self._workers.values()
+                ),
             },
         ))
         if abs(ledger["discrepancy"]) > 1e-6:
@@ -812,6 +894,9 @@ class GTBEnvironment:
             fine_paid = min(fine_owed, coin_balance)
             worker.remove_resource(ResourceType.COIN, fine_paid)
             self._ledger_burn("fines", fine_paid)
+            self._treasury += fine_paid
+            if self._config.taxation.debt_enabled and fine_owed > fine_paid:
+                worker.tax_debt += fine_owed - fine_paid
             worker.times_caught += 1
             worker.total_fines += fine_paid
 
@@ -1015,6 +1100,10 @@ class GTBEnvironment:
             ws.inventory = dict(w.inventory)
             snapshot[aid] = ws
         return snapshot
+
+    @property
+    def treasury(self) -> float:
+        return self._treasury
 
     @property
     def tax_schedule(self) -> TaxSchedule:

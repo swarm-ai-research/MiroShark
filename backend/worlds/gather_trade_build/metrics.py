@@ -29,6 +29,8 @@ class GTBMetrics:
     # Tax revenue
     total_tax_revenue: float = 0.0
     mean_effective_tax_rate: float = 0.0
+    total_tax_shortfall: float = 0.0  # tax owed but unpayable this epoch
+    total_redistributed: float = 0.0  # lump-sum transfers paid out
 
     # Inequality
     gini_coefficient: float = 0.0
@@ -70,6 +72,8 @@ class GTBMetrics:
             "total_houses_built": self.total_houses_built,
             "total_tax_revenue": self.total_tax_revenue,
             "mean_effective_tax_rate": self.mean_effective_tax_rate,
+            "total_tax_shortfall": self.total_tax_shortfall,
+            "total_redistributed": self.total_redistributed,
             "gini_coefficient": self.gini_coefficient,
             "atkinson_index": self.atkinson_index,
             "welfare": self.welfare,
@@ -186,6 +190,14 @@ def compute_gtb_metrics(
 
     # Tax
     total_tax = sum(w.tax_paid_this_epoch for w in workers.values())
+    tax_shortfall = sum(
+        e.details.get("shortfall", 0.0)
+        for e in events if e.event_type == "tax"
+    )
+    redistributed = sum(
+        e.details.get("amount", 0.0)
+        for e in events if e.event_type == "redistribution"
+    )
     mean_eff_rate = (
         sum(
             w.tax_paid_this_epoch / max(w.reported_income_this_epoch, 1e-9)
@@ -257,6 +269,8 @@ def compute_gtb_metrics(
         total_houses_built=total_houses,
         total_tax_revenue=total_tax,
         mean_effective_tax_rate=mean_eff_rate,
+        total_tax_shortfall=tax_shortfall,
+        total_redistributed=redistributed,
         gini_coefficient=gini,
         atkinson_index=atkinson,
         welfare=welfare,

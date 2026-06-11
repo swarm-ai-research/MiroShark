@@ -28,6 +28,13 @@ class TaxScheduleConfig:
     damping: float = 0.0  # rate-of-change damping for planner updates
     update_interval_epochs: int = 1  # how often planner updates
     allow_non_monotone: bool = False  # permit U-shaped schedules
+    # Where collected taxes + fines go:
+    #   none     — burned (legacy behavior)
+    #   lump_sum — redistributed equally to all workers at epoch close
+    redistribution: str = "none"
+    # When True, unpaid tax/fines accrue as debt collected from future
+    # coin instead of silently evaporating.
+    debt_enabled: bool = False
 
 
 @dataclass
@@ -101,6 +108,11 @@ class BuildConfig:
     stone_cost: float = 3.0
     income_per_house_per_step: float = 1.0
     max_houses_per_agent: int = 10
+    # How house income is funded:
+    #   mint     — coin printed from nothing each step (legacy behavior)
+    #   treasury — paid from collected taxes/fines, pro-rated when the
+    #              treasury can't cover full demand (fiscal closure)
+    house_income_mode: str = "mint"
 
 
 @dataclass
@@ -133,6 +145,13 @@ class GTBConfig:
     energy_cost_gather: float = 1.0
     energy_cost_trade: float = 0.5
     energy_cost_build: float = 2.0
+    # Income accounting:
+    #   legacy — gathering books taxable income with no coin behind it,
+    #            sale proceeds book income again (double count), buyer
+    #            spending is not an expense
+    #   coin   — income == net coin flow: house income + sale proceeds
+    #            - purchase outlays; gathering yields resources only
+    ledger_mode: str = "legacy"
     seed: Optional[int] = None
 
     @classmethod
@@ -160,7 +179,7 @@ class GTBConfig:
         build_cfg = BuildConfig(**{
             k: build_data[k] for k in (
                 "wood_cost", "stone_cost", "income_per_house_per_step",
-                "max_houses_per_agent",
+                "max_houses_per_agent", "house_income_mode",
             ) if k in build_data
         })
 
@@ -175,7 +194,8 @@ class GTBConfig:
         if brackets:
             tax_kwargs["brackets"] = brackets
         for k in ("schedule_family", "smoothing", "damping",
-                   "update_interval_epochs", "allow_non_monotone"):
+                   "update_interval_epochs", "allow_non_monotone",
+                   "redistribution", "debt_enabled"):
             if k in tax_data:
                 tax_kwargs[k] = tax_data[k]
         tax_cfg = TaxScheduleConfig(**tax_kwargs)
@@ -231,5 +251,6 @@ class GTBConfig:
             energy_cost_gather=data.get("energy_cost_gather", 1.0),
             energy_cost_trade=data.get("energy_cost_trade", 0.5),
             energy_cost_build=data.get("energy_cost_build", 2.0),
+            ledger_mode=data.get("ledger_mode", "legacy"),
             seed=data.get("seed"),
         )

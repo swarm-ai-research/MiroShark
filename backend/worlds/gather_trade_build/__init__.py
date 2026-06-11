@@ -27,6 +27,7 @@ from worlds.gather_trade_build.metrics import GTBMetrics, compute_gtb_metrics
 from worlds.gather_trade_build.planner import PlannerAgent
 from worlds.gather_trade_build.reward import compute_worker_utility
 from worlds.gather_trade_build.runner import GTBScenarioRunner
+from worlds.gather_trade_build.sweep import SweepResult, export_sweep, run_sweep
 from worlds.gather_trade_build.tax_schedule import TaxSchedule
 
 __all__ = [
@@ -47,9 +48,12 @@ __all__ = [
     "PlannerAgent",
     "Resource",
     "ResourceType",
+    "SweepResult",
     "TaxSchedule",
     "TradeResult",
     "WorkerState",
     "compute_gtb_metrics",
     "compute_worker_utility",
+    "export_sweep",
+    "run_sweep",
 ]

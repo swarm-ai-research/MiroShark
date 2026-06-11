@@ -41,7 +41,9 @@ class GTBMetrics:
     total_audits: int = 0
     total_catches: int = 0
     total_fines: float = 0.0
-    undetected_evasion_rate: float = 0.0  # fraction of evasion not caught
+    # Fraction of hidden income (gross - reported) whose hider was NOT
+    # caught by an audit this epoch. 0.0 when nothing was hidden.
+    undetected_evasion_rate: float = 0.0
     enforcement_cost: float = 0.0  # proxy: audit_count * per_audit_cost
 
     # Bunching
@@ -55,6 +57,10 @@ class GTBMetrics:
     exploit_frequency: float = 0.0  # misreport + collusion events / total events
     governance_backfire_events: int = 0  # fines on honest agents (false positives)
     variance_amplification: float = 0.0  # std(income) / mean(income)
+
+    # Ledger coherence (from the env's epoch_ledger event)
+    income_coin_gap: float = 0.0  # booked gross income minus coin actually received
+    coin_conserved: bool = True  # worker coin == itemized mints - burns
 
     def to_dict(self) -> dict:
         return {
@@ -78,6 +84,8 @@ class GTBMetrics:
             "exploit_frequency": self.exploit_frequency,
             "governance_backfire_events": self.governance_backfire_events,
             "variance_amplification": self.variance_amplification,
+            "income_coin_gap": self.income_coin_gap,
+            "coin_conserved": self.coin_conserved,
         }
 
 
@@ -185,12 +193,21 @@ def compute_gtb_metrics(
         ) / n
     )
 
-    # Enforcement
-    audit_events = [e for e in events if e.event_type in ("audit_caught", "audit_miss", "audit_false_positive")]
+    # Enforcement. The env stopped emitting `audit_miss` when audit
+    # selection was fixed (unselected workers are simply not observed),
+    # so undetected evasion is measured on hidden income instead: the
+    # share of (gross - reported) belonging to workers no audit caught.
+    audit_events = [e for e in events if e.event_type in ("audit_caught", "audit_false_positive")]
     catches = [e for e in events if e.event_type == "audit_caught"]
-    misses = [e for e in events if e.event_type == "audit_miss"]
-    total_evasion_attempts = len(catches) + len(misses)
-    undetected_rate = len(misses) / max(total_evasion_attempts, 1)
+    caught_agents = {e.agent_id for e in catches}
+    hidden_total = 0.0
+    hidden_uncaught = 0.0
+    for aid, w in workers.items():
+        hidden = max(0.0, w.gross_income_this_epoch - w.reported_income_this_epoch)
+        hidden_total += hidden
+        if aid not in caught_agents:
+            hidden_uncaught += hidden
+    undetected_rate = hidden_uncaught / hidden_total if hidden_total > 1e-9 else 0.0
     total_fines = sum(e.details.get("fine", 0.0) for e in catches)
 
     # Bunching
@@ -222,6 +239,17 @@ def compute_gtb_metrics(
 
     total_houses = sum(w.houses_built for w in workers.values())
 
+    # Ledger coherence from the env's epoch_ledger event (one per epoch)
+    ledger_events = [e for e in events if e.event_type == "epoch_ledger"]
+    income_coin_gap = (
+        ledger_events[-1].details.get("income_coin_gap", 0.0)
+        if ledger_events else 0.0
+    )
+    coin_conserved = (
+        ledger_events[-1].details.get("coin_conserved", True)
+        if ledger_events else True
+    )
+
     return GTBMetrics(
         epoch=epoch,
         total_production=total_prod,
@@ -245,4 +273,6 @@ def compute_gtb_metrics(
             1 for e in events if e.event_type == "audit_false_positive"
         ),
         variance_amplification=variance_amp,
+        income_coin_gap=income_coin_gap,
+        coin_conserved=coin_conserved,
     )

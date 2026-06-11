@@ -113,6 +113,15 @@ class GTBEnvironment:
         # Frozen agents (from audit penalties)
         self._frozen_agents: Dict[str, int] = {}  # agent_id -> unfreeze_epoch
 
+        # Coin ledger: every mint/burn itemized by source so conservation
+        # can be verified (sum of worker coin == minted - burned).
+        self._coin_minted: Dict[str, float] = {}
+        self._coin_burned: Dict[str, float] = {}
+        # Gross coin actually received per worker this epoch (house income,
+        # sale proceeds). Compared against gross_income_this_epoch at epoch
+        # close to surface the income-vs-coin gap.
+        self._coin_earned_this_epoch: Dict[str, float] = {}
+
         self._init_grid()
 
     # ------------------------------------------------------------------
@@ -159,6 +168,7 @@ class GTBEnvironment:
             skill_build=skill_build,
         )
         worker.add_resource(ResourceType.COIN, 10.0)  # starting endowment
+        self._ledger_mint("endowment", 10.0)
         self._workers[agent_id] = worker
         self._grid[row][col].occupants.append(agent_id)
         self._action_traces[agent_id] = []
@@ -527,6 +537,10 @@ class GTBEnvironment:
                 continue
             income = house.income_per_step
             worker.add_resource(ResourceType.COIN, income)
+            self._ledger_mint("house_income", income)
+            self._coin_earned_this_epoch[house.owner_id] = (
+                self._coin_earned_this_epoch.get(house.owner_id, 0.0) + income
+            )
             worker.gross_income_this_epoch += income
             # Only add to reported income the non-hidden fraction.
             # If the worker has misreported, the underreport fraction applies
@@ -600,6 +614,13 @@ class GTBEnvironment:
 
                 buyer.remove_resource(ResourceType.COIN, total + fee)
                 seller.add_resource(ResourceType.COIN, total - fee)
+                # Buyer pays total+fee, seller receives total-fee: both
+                # fee halves leave circulation.
+                self._ledger_burn("trade_fees", 2.0 * fee)
+                self._coin_earned_this_epoch[sell.agent_id] = (
+                    self._coin_earned_this_epoch.get(sell.agent_id, 0.0)
+                    + (total - fee)
+                )
                 seller.remove_resource(rtype, qty)
                 buyer.add_resource(rtype, qty)
 
@@ -661,6 +682,7 @@ class GTBEnvironment:
             coin_balance = worker.get_resource(ResourceType.COIN)
             actual_tax = min(tax, coin_balance)
             worker.remove_resource(ResourceType.COIN, actual_tax)
+            self._ledger_burn("taxes", actual_tax)
             worker.tax_paid_this_epoch = actual_tax
             events.append(GTBEvent(
                 event_type="tax", epoch=self._current_epoch,
@@ -691,6 +713,34 @@ class GTBEnvironment:
                 agent_id=aid,
             ))
 
+        # Ledger coherence report. Two distinct checks:
+        #   - coin conservation (hard invariant): worker coin == minted - burned
+        #   - income/coin gap (known issue, tracked for the Phase 1 ledger
+        #     rework): gathering and deferred-income carry-ins book gross
+        #     income with no corresponding coin inflow, so this gap is
+        #     expected to be positive until income == net coin flow.
+        income_coin_gap = sum(
+            w.gross_income_this_epoch
+            - self._coin_earned_this_epoch.get(aid, 0.0)
+            for aid, w in self._workers.items()
+        )
+        ledger = self.coin_ledger()
+        events.append(GTBEvent(
+            event_type="epoch_ledger", epoch=self._current_epoch,
+            details={
+                "income_coin_gap": income_coin_gap,
+                "coin_conserved": abs(ledger["discrepancy"]) <= 1e-6,
+                "discrepancy": ledger["discrepancy"],
+                "minted": ledger["minted"],
+                "burned": ledger["burned"],
+            },
+        ))
+        if abs(ledger["discrepancy"]) > 1e-6:
+            logger.warning(
+                "GTB coin conservation violated at epoch %d: %s",
+                self._current_epoch, ledger,
+            )
+
         # Snapshot worker state AFTER taxes/audits but BEFORE reset.
         # This gives metrics the accurate post-tax, pre-reset view.
         snapshot = self.snapshot_epoch_data()
@@ -707,6 +757,7 @@ class GTBEnvironment:
 
         # Clear per-epoch misreport fractions
         self._misreport_fractions.clear()
+        self._coin_earned_this_epoch.clear()
 
         self._current_epoch += 1
         self._current_step = 0
@@ -760,6 +811,7 @@ class GTBEnvironment:
             coin_balance = worker.get_resource(ResourceType.COIN)
             fine_paid = min(fine_owed, coin_balance)
             worker.remove_resource(ResourceType.COIN, fine_paid)
+            self._ledger_burn("fines", fine_paid)
             worker.times_caught += 1
             worker.total_fines += fine_paid
 
@@ -900,6 +952,49 @@ class GTBEnvironment:
                         ))
 
         return events
+
+    # ------------------------------------------------------------------
+    # Coin ledger
+    # ------------------------------------------------------------------
+
+    def _ledger_mint(self, source: str, amount: float) -> None:
+        self._coin_minted[source] = self._coin_minted.get(source, 0.0) + amount
+
+    def _ledger_burn(self, sink: str, amount: float) -> None:
+        self._coin_burned[sink] = self._coin_burned.get(sink, 0.0) + amount
+
+    def register_external_coin(self, delta: float, source: str) -> None:
+        """Record a coin change made outside the env (e.g. prediction-market
+        stake escrow/payouts in the world service) so conservation checks
+        stay balanced. Positive delta = coin added to a worker, negative =
+        coin removed."""
+        if delta >= 0:
+            self._ledger_mint(source, delta)
+        else:
+            self._ledger_burn(source, -delta)
+
+    def coin_ledger(self) -> Dict[str, Any]:
+        """Itemized mint/burn totals and the conservation discrepancy.
+
+        discrepancy == 0 (within float tolerance) means every coin held by
+        workers is accounted for by an itemized mint minus an itemized burn.
+        """
+        total_coin = sum(
+            w.get_resource(ResourceType.COIN) for w in self._workers.values()
+        )
+        minted = sum(self._coin_minted.values())
+        burned = sum(self._coin_burned.values())
+        return {
+            "total_worker_coin": total_coin,
+            "minted": dict(self._coin_minted),
+            "burned": dict(self._coin_burned),
+            "minted_total": minted,
+            "burned_total": burned,
+            "discrepancy": total_coin - (minted - burned),
+        }
+
+    def verify_coin_conservation(self, tolerance: float = 1e-6) -> bool:
+        return abs(self.coin_ledger()["discrepancy"]) <= tolerance
 
     # ------------------------------------------------------------------
     # Accessors

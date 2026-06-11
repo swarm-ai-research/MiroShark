@@ -22,7 +22,6 @@ from worlds.gather_trade_build.agents import (
     HonestWorkerPolicy,
 )
 from worlds.gather_trade_build.config import GTBConfig
-from worlds.gather_trade_build.entities import ResourceType
 from worlds.gather_trade_build.env import GTBAction, GTBEnvironment
 from worlds.gather_trade_build.metrics import GTBMetrics, compute_gtb_metrics
 from worlds.gather_trade_build.planner import PlannerAgent
@@ -237,6 +236,7 @@ class GTBWorldService:
                         "market_id": market_id, "side": side,
                         "amount": amount, "coin": coin}
             worker.inventory["coin"] = max(0.0, coin - float(amount))
+            self._env.register_external_coin(-float(amount), "stake_escrow")
             return {"ok": True, "stake": stake.to_dict(),
                     "remaining_coin": worker.inventory["coin"]}
 
@@ -283,6 +283,7 @@ class GTBWorldService:
                 continue
             # Escrow: debit the worker's coin now; payouts on resolve.
             worker.inventory["coin"] = max(0.0, coin - amount)
+            self._env.register_external_coin(-amount, "stake_escrow")
             out.append(GTBEvent(
                 event_type="stake_placed",
                 epoch=self._env.current_epoch,
@@ -376,6 +377,7 @@ class GTBWorldService:
                 w = self._env.workers.get(agent_id)
                 if w is not None:
                     w.inventory["coin"] = w.inventory.get("coin", 0.0) + gross
+                    self._env.register_external_coin(gross, "stake_payouts")
         if not self._market_book.open_markets:
             self._market_book.generate(metrics.epoch, metrics_dict)
         # IMPORTANT: end_epoch() above has already reset each worker's

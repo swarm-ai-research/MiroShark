@@ -58,6 +58,10 @@ class GTBMetrics:
     undetected_evasion_rate: float = 0.0
     enforcement_cost: float = 0.0  # proxy: audit_count * per_audit_cost
 
+    # Market activity
+    total_trades: int = 0
+    total_trade_volume: float = 0.0  # units of resources exchanged
+
     # Bunching
     bunching_intensity: float = 0.0  # fraction of incomes within bin_width of thresholds
 
@@ -95,6 +99,8 @@ class GTBMetrics:
             "total_fines": self.total_fines,
             "undetected_evasion_rate": self.undetected_evasion_rate,
             "enforcement_cost": self.enforcement_cost,
+            "total_trades": self.total_trades,
+            "total_trade_volume": self.total_trade_volume,
             "bunching_intensity": self.bunching_intensity,
             "collusion_events_detected": self.collusion_events_detected,
             "collusion_suspicion_mean": self.collusion_suspicion_mean,
@@ -253,6 +259,10 @@ def compute_gtb_metrics(
     undetected_rate = hidden_uncaught / hidden_total if hidden_total > 1e-9 else 0.0
     total_fines = sum(e.details.get("fine", 0.0) for e in catches)
 
+    # Market activity
+    trade_events = [e for e in events if e.event_type == "trade"]
+    trade_volume = sum(e.details.get("quantity", 0.0) for e in trade_events)
+
     # Bunching
     bunching = compute_bunching_intensity(incomes, bracket_thresholds, bin_width)
 
@@ -313,6 +323,8 @@ def compute_gtb_metrics(
         total_fines=total_fines,
         undetected_evasion_rate=undetected_rate,
         enforcement_cost=len(audit_events) * per_audit_cost,
+        total_trades=len(trade_events),
+        total_trade_volume=trade_volume,
         bunching_intensity=bunching,
         collusion_events_detected=len(collusion_events),
         collusion_suspicion_mean=mean_suspicion,

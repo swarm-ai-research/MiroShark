@@ -11,6 +11,7 @@ from worlds.gather_trade_build.agents import (
     GTBWorkerPolicy,
     HonestWorkerPolicy,
     RationalWorkerPolicy,
+    ZITraderPolicy,
 )
 from worlds.gather_trade_build.config import GTBConfig, UtilityConfig
 from worlds.gather_trade_build.entities import (
@@ -60,6 +61,7 @@ __all__ = [
     "TradeResult",
     "UtilityConfig",
     "WorkerState",
+    "ZITraderPolicy",
     "compute_gtb_metrics",
     "compute_isoelastic_utility",
     "compute_worker_utility",

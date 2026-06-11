@@ -92,6 +92,8 @@ class GTBEnvironment:
         # Market
         self._buy_orders: List[MarketOrder] = []
         self._sell_orders: List[MarketOrder] = []
+        self._last_trade_price: Dict[str, float] = {}
+        self._volume_this_epoch: Dict[str, float] = {}
 
         # Events
         self._events: List[GTBEvent] = []
@@ -218,7 +220,26 @@ class GTBEnvironment:
             "tax_schedule": self._tax_schedule.to_dict(),
             "visible_cells": visible,
             "frozen": agent_id in self._frozen_agents,
+            "market_info": self._market_info(),
         }
+
+    def _market_info(self) -> Dict[str, Any]:
+        """Per-resource price discovery info: last trade price, best
+        bid/ask on the resting book, and volume this epoch."""
+        info: Dict[str, Any] = {}
+        for rtype in (ResourceType.WOOD, ResourceType.STONE):
+            key = rtype.value
+            bids = [o.price_per_unit for o in self._buy_orders
+                    if o.resource_type == rtype and o.quantity > 1e-12]
+            asks = [o.price_per_unit for o in self._sell_orders
+                    if o.resource_type == rtype and o.quantity > 1e-12]
+            info[key] = {
+                "last_price": self._last_trade_price.get(key),
+                "best_bid": max(bids) if bids else None,
+                "best_ask": min(asks) if asks else None,
+                "volume_this_epoch": self._volume_this_epoch.get(key, 0.0),
+            }
+        return info
 
     # ------------------------------------------------------------------
     # Step execution
@@ -387,6 +408,13 @@ class GTBEnvironment:
                 epoch=self._current_epoch, agent_id=worker.agent_id,
                 details={"reason": "max_houses"},
             )
+        r0, c0 = worker.position
+        if self._grid[r0][c0].house is not None:
+            return GTBEvent(
+                event_type="build_fail", step=self._current_step,
+                epoch=self._current_epoch, agent_id=worker.agent_id,
+                details={"reason": "cell_occupied"},
+            )
         wood_ok = worker.remove_resource(ResourceType.WOOD, cfg.wood_cost)
         if not wood_ok:
             return GTBEvent(
@@ -441,14 +469,30 @@ class GTBEnvironment:
             )
         price = max(self._config.market.price_floor,
                      min(action.price, self._config.market.price_ceiling))
+        qty = max(0.0, action.quantity)
+        ttl = self._config.market.order_ttl_steps
         order = MarketOrder(
             agent_id=worker.agent_id,
             resource_type=action.resource_type,
-            quantity=max(0, action.quantity),
+            quantity=qty,
             price_per_unit=price,
             is_buy=True,
             step=self._current_step,
+            expiry_step=self._current_step + ttl,
         )
+        if ttl > 0:
+            # Persistent book: escrow the full worst-case cost at post
+            # time so a resting bid can always settle (no spoofing).
+            escrow = qty * price * (1.0 + self._config.market.transaction_fee_rate)
+            if qty <= 0 or worker.get_resource(ResourceType.COIN) < escrow:
+                return GTBEvent(
+                    event_type="trade_fail", step=self._current_step,
+                    epoch=self._current_epoch, agent_id=worker.agent_id,
+                    details={"reason": "insufficient_coin_escrow",
+                              "required": escrow},
+                )
+            worker.remove_resource(ResourceType.COIN, escrow)
+            order.escrowed_coin = escrow
         self._buy_orders.append(order)
         self._spend_energy(worker, self._config.energy_cost_trade)
         return GTBEvent(
@@ -475,14 +519,27 @@ class GTBEnvironment:
             )
         price = max(self._config.market.price_floor,
                      min(action.price, self._config.market.price_ceiling))
+        qty = max(0.0, action.quantity)
+        ttl = self._config.market.order_ttl_steps
         order = MarketOrder(
             agent_id=worker.agent_id,
             resource_type=action.resource_type,
-            quantity=max(0, action.quantity),
+            quantity=qty,
             price_per_unit=price,
             is_buy=False,
             step=self._current_step,
+            expiry_step=self._current_step + ttl,
         )
+        if ttl > 0:
+            # Persistent book: escrow the resource at post time.
+            if qty <= 0 or worker.get_resource(action.resource_type) < qty:
+                return GTBEvent(
+                    event_type="trade_fail", step=self._current_step,
+                    epoch=self._current_epoch, agent_id=worker.agent_id,
+                    details={"reason": "insufficient_resource_escrow",
+                              "required": qty},
+                )
+            worker.remove_resource(action.resource_type, qty)
         self._sell_orders.append(order)
         self._spend_energy(worker, self._config.energy_cost_trade)
         return GTBEvent(
@@ -644,16 +701,23 @@ class GTBEnvironment:
                     bi += 1
                     continue
 
-                # Check buyer has coin and seller has resource
-                if buyer.get_resource(ResourceType.COIN) < total + fee:
-                    bi += 1
-                    continue
-                if seller.get_resource(rtype) < qty:
-                    si += 1
-                    continue
-
-                buyer.remove_resource(ResourceType.COIN, total + fee)
-                seller.add_resource(ResourceType.COIN, total - fee)
+                persistent = self._config.market.order_ttl_steps > 0
+                if persistent:
+                    # Coin and resource were escrowed at post time; the
+                    # midpoint price <= bid, so escrow always covers it.
+                    buy.escrowed_coin -= total + fee
+                    seller.add_resource(ResourceType.COIN, total - fee)
+                else:
+                    # Legacy same-tick book: check balances at match time
+                    if buyer.get_resource(ResourceType.COIN) < total + fee:
+                        bi += 1
+                        continue
+                    if seller.get_resource(rtype) < qty:
+                        si += 1
+                        continue
+                    buyer.remove_resource(ResourceType.COIN, total + fee)
+                    seller.add_resource(ResourceType.COIN, total - fee)
+                    seller.remove_resource(rtype, qty)
                 # Buyer pays total+fee, seller receives total-fee: both
                 # fee halves leave circulation.
                 self._ledger_burn("trade_fees", 2.0 * fee)
@@ -661,8 +725,13 @@ class GTBEnvironment:
                     self._coin_earned_this_epoch.get(sell.agent_id, 0.0)
                     + (total - fee)
                 )
-                seller.remove_resource(rtype, qty)
                 buyer.add_resource(rtype, qty)
+
+                # Price discovery info exposed in observations
+                self._last_trade_price[rtype.value] = price
+                self._volume_this_epoch[rtype.value] = (
+                    self._volume_this_epoch.get(rtype.value, 0.0) + qty
+                )
 
                 # Trade income for seller
                 seller.gross_income_this_epoch += total - fee
@@ -699,9 +768,62 @@ class GTBEnvironment:
                     },
                 ))
 
-        # Clear order books
-        self._buy_orders.clear()
-        self._sell_orders.clear()
+        if self._config.market.order_ttl_steps > 0:
+            # Persistent book: drop filled orders, expire stale ones
+            # (refunding escrow), keep the rest resting.
+            events.extend(self._expire_orders())
+        else:
+            # Legacy: order books are wiped every step
+            self._buy_orders.clear()
+            self._sell_orders.clear()
+        return events
+
+    def _expire_orders(self, force_all: bool = False) -> List[GTBEvent]:
+        """Remove filled/expired orders, refunding escrow to their owners.
+
+        With force_all=True every resting order is cancelled (epoch close).
+        """
+        events: List[GTBEvent] = []
+
+        def _expired(o: MarketOrder) -> bool:
+            return force_all or o.quantity <= 1e-12 or self._current_step >= o.expiry_step
+
+        kept_buys: List[MarketOrder] = []
+        for o in self._buy_orders:
+            if not _expired(o):
+                kept_buys.append(o)
+                continue
+            refund = max(0.0, o.escrowed_coin)
+            if refund > 0:
+                worker = self._workers.get(o.agent_id)
+                if worker is not None:
+                    worker.add_resource(ResourceType.COIN, refund)
+            if o.quantity > 1e-12:
+                events.append(GTBEvent(
+                    event_type="order_expired", step=self._current_step,
+                    epoch=self._current_epoch, agent_id=o.agent_id,
+                    details={"side": "buy", "resource": o.resource_type.value,
+                              "unfilled_qty": o.quantity,
+                              "escrow_refund": refund},
+                ))
+        self._buy_orders = kept_buys
+
+        kept_sells: List[MarketOrder] = []
+        for o in self._sell_orders:
+            if not _expired(o):
+                kept_sells.append(o)
+                continue
+            if o.quantity > 1e-12:
+                worker = self._workers.get(o.agent_id)
+                if worker is not None:
+                    worker.add_resource(o.resource_type, o.quantity)
+                events.append(GTBEvent(
+                    event_type="order_expired", step=self._current_step,
+                    epoch=self._current_epoch, agent_id=o.agent_id,
+                    details={"side": "sell", "resource": o.resource_type.value,
+                              "unfilled_qty": o.quantity},
+                ))
+        self._sell_orders = kept_sells
         return events
 
     # ------------------------------------------------------------------
@@ -728,6 +850,11 @@ class GTBEnvironment:
         snapshot of worker states (for metrics computation).
         """
         events: List[GTBEvent] = []
+
+        # 0. Persistent book: cancel all resting orders and refund escrow
+        # BEFORE taxes, so locked coin is available for the tax bill.
+        if self._config.market.order_ttl_steps > 0:
+            events.extend(self._expire_orders(force_all=True))
 
         # 1. Collect taxes (only what can actually be paid)
         debt_enabled = self._config.taxation.debt_enabled
@@ -848,6 +975,7 @@ class GTBEnvironment:
         # Clear per-epoch misreport fractions
         self._misreport_fractions.clear()
         self._coin_earned_this_epoch.clear()
+        self._volume_this_epoch.clear()
 
         self._current_epoch += 1
         self._current_step = 0
@@ -1075,10 +1203,14 @@ class GTBEnvironment:
         total_coin = sum(
             w.get_resource(ResourceType.COIN) for w in self._workers.values()
         )
+        # Coin locked in resting buy orders is still worker-owned
+        escrowed = sum(max(0.0, o.escrowed_coin) for o in self._buy_orders)
+        total_coin += escrowed
         minted = sum(self._coin_minted.values())
         burned = sum(self._coin_burned.values())
         return {
             "total_worker_coin": total_coin,
+            "escrowed_coin": escrowed,
             "minted": dict(self._coin_minted),
             "burned": dict(self._coin_burned),
             "minted_total": minted,

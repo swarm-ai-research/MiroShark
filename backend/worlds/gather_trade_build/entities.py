@@ -70,6 +70,9 @@ class MarketOrder:
     price_per_unit: float  # In coins
     is_buy: bool = True  # True=buy, False=sell
     step: int = 0
+    # Persistent-book fields (market.order_ttl_steps > 0)
+    expiry_step: int = 0  # step after which the order is cancelled
+    escrowed_coin: float = 0.0  # buyer coin locked at post time
 
 
 @dataclass

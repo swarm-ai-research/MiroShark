@@ -21,6 +21,7 @@ from worlds.gather_trade_build.agents import (
     GamingWorkerPolicy,
     HonestWorkerPolicy,
     RationalWorkerPolicy,
+    ZITraderPolicy,
 )
 from worlds.gather_trade_build.config import GTBConfig
 from worlds.gather_trade_build.env import GTBAction, GTBEnvironment
@@ -78,6 +79,14 @@ def _make_policy(spec: Dict[str, Any], agent_id: str, seed: int):
             seed=seed,
             eta=spec.get("eta", 0.35),
             labor_coeff=spec.get("labor_coeff", 0.15),
+        )
+    if kind == "trader":
+        return ZITraderPolicy(
+            agent_id=agent_id,
+            seed=seed,
+            value_estimate=spec.get("value_estimate", 2.0),
+            value_jitter=spec.get("value_jitter", 0.5),
+            order_qty=spec.get("order_qty", 1.0),
         )
     if kind == "gaming":
         return GamingWorkerPolicy(
@@ -154,6 +163,10 @@ class GTBWorldService:
             config.planner, self._env.tax_schedule, seed=seed
         )
         self._epoch_metrics: List[GTBMetrics] = []
+        # Step events buffered for epoch metrics (trades, misreports,
+        # shifts happen mid-epoch; metrics must see them, as the
+        # headless runner does)
+        self._step_event_buffer: List[Any] = []
         self._action_overrides: Dict[str, GTBAction] = {}
         self._step_in_epoch = 0
         from .gtb_markets import GTBMarketBook, GTBStakeBook
@@ -313,6 +326,7 @@ class GTBWorldService:
             events = self._env.apply_actions(actions)
             stake_events = self._process_stakes_locked(actions)
             events.extend(stake_events)
+            self._step_event_buffer.extend(events)
             self._action_overrides.clear()
             self._step_in_epoch += 1
             should_close = self._step_in_epoch >= self._steps_per_epoch
@@ -329,7 +343,11 @@ class GTBWorldService:
             }
 
     def _close_epoch_locked(self) -> Dict[str, Any]:
-        epoch_events = list(self._env.detect_collusion())
+        # Include this epoch's step events (trades, misreports, shifts)
+        # so metrics see the whole epoch, matching the headless runner.
+        epoch_events = list(self._step_event_buffer)
+        self._step_event_buffer = []
+        epoch_events.extend(self._env.detect_collusion())
         result = self._env.end_epoch()
         epoch_events.extend(result.events)
         for policy in self._policies.values():

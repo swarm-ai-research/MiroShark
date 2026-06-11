@@ -285,6 +285,89 @@ class EvasiveWorkerPolicy(GTBWorkerPolicy):
         return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
 
 
+class ZITraderPolicy(GTBWorkerPolicy):
+    """Zero-intelligence-constrained trader (Gode & Sunder 1993).
+
+    Posts random-priced limit orders constrained to be individually
+    rational around a private resource valuation: bids are drawn at or
+    below the private value, asks at or above it. Heterogeneous private
+    values across a trader population make bids cross asks, providing
+    organic two-sided market flow and price discovery toward the value
+    band — Gode & Sunder showed ZI-C populations reach near-efficient
+    prices without any strategic intelligence.
+
+    When short of inventory the trader gathers like an honest worker so
+    it always has something to sell.
+    """
+
+    def __init__(self, agent_id: str, value_estimate: float = 2.0,
+                 value_jitter: float = 0.5, order_qty: float = 1.0,
+                 min_coin_reserve: float = 2.0,
+                 seed: Optional[int] = None) -> None:
+        super().__init__(agent_id, seed)
+        # Private value: heterogeneous across traders so books cross
+        self._value = value_estimate * (
+            1.0 + self._rng.uniform(-value_jitter, value_jitter)
+        )
+        self._order_qty = order_qty
+        self._min_coin_reserve = min_coin_reserve
+
+    @property
+    def private_value(self) -> float:
+        return self._value
+
+    def decide(self, obs: dict) -> GTBAction:
+        energy = obs.get("energy", 0)
+        inventory = obs.get("inventory", {})
+        coin = inventory.get(ResourceType.COIN.value, 0.0)
+
+        if energy >= 0.5:
+            # Sell surplus above the private value
+            for rtype in (ResourceType.WOOD, ResourceType.STONE):
+                held = inventory.get(rtype.value, 0.0)
+                if held >= self._order_qty:
+                    ask = self._value * (1.0 + self._rng.random())
+                    return GTBAction(
+                        agent_id=self.agent_id,
+                        action_type=GTBActionType.TRADE_SELL,
+                        resource_type=rtype,
+                        quantity=min(self._order_qty, held),
+                        price=ask,
+                    )
+            # Buy below the private value while keeping a coin reserve
+            affordable = coin - self._min_coin_reserve
+            if affordable >= self._value * self._order_qty:
+                rtype = self._rng.choice(
+                    [ResourceType.WOOD, ResourceType.STONE]
+                )
+                bid = self._value * self._rng.uniform(0.5, 1.0)
+                return GTBAction(
+                    agent_id=self.agent_id,
+                    action_type=GTBActionType.TRADE_BUY,
+                    resource_type=rtype,
+                    quantity=self._order_qty,
+                    price=bid,
+                )
+
+        # Restock: gather like an honest worker
+        if energy >= 1.0:
+            pos = obs.get("position", (0, 0))
+            for cell in obs.get("visible_cells", []):
+                if cell.get("pos") == tuple(pos) and "resource" in cell:
+                    if cell.get("amount", 0) > 0:
+                        return GTBAction(
+                            agent_id=self.agent_id,
+                            action_type=GTBActionType.GATHER,
+                        )
+            return GTBAction(
+                agent_id=self.agent_id,
+                action_type=GTBActionType.MOVE,
+                direction=self._random_direction(),
+            )
+
+        return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+
+
 class CollusiveWorkerPolicy(GTBWorkerPolicy):
     """Worker that coordinates with coalition members.
 

@@ -25,6 +25,7 @@ from worlds.gather_trade_build.agents import (
     GTBWorkerPolicy,
     HonestWorkerPolicy,
     RationalWorkerPolicy,
+    ZITraderPolicy,
 )
 from worlds.gather_trade_build.config import GTBConfig
 from worlds.gather_trade_build.entities import ResourceType
@@ -53,6 +54,14 @@ def _create_policy(
             labor_coeff=agent_spec.get(
                 "labor_coeff", udef.get("labor_coeff", 0.15)
             ),
+            seed=seed,
+        )
+    elif ptype == "trader":
+        return ZITraderPolicy(
+            agent_id,
+            value_estimate=agent_spec.get("value_estimate", 2.0),
+            value_jitter=agent_spec.get("value_jitter", 0.5),
+            order_qty=agent_spec.get("order_qty", 1.0),
             seed=seed,
         )
     elif ptype == "gaming":

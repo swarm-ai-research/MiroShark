@@ -98,6 +98,12 @@ class MarketConfig:
     transaction_fee_rate: float = 0.02
     price_floor: float = 0.1
     price_ceiling: float = 100.0
+    # 0 = legacy: order books are wiped at the end of every step, so a
+    # bid can only ever match an ask posted in the same tick.
+    # >0 = persistent book: orders rest for this many steps (cancelled
+    # at epoch close), with coin/resource escrowed at post time so
+    # resting orders cannot be invalidated or spoofed.
+    order_ttl_steps: int = 0
 
 
 @dataclass
@@ -193,7 +199,8 @@ class GTBConfig:
         market_data = data.get("market", {})
         market_cfg = MarketConfig(**{
             k: market_data[k] for k in (
-                "enabled", "transaction_fee_rate", "price_floor", "price_ceiling",
+                "enabled", "transaction_fee_rate", "price_floor",
+                "price_ceiling", "order_ttl_steps",
             ) if k in market_data
         })
 

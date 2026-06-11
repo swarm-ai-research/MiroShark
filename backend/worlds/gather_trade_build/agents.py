@@ -117,6 +117,52 @@ class HonestWorkerPolicy(GTBWorkerPolicy):
         return best_dir
 
 
+class RationalWorkerPolicy(HonestWorkerPolicy):
+    """Labor-responsive worker: works only while one more unit of work is
+    worth it under isoelastic preferences.
+
+    Each step it compares the post-tax marginal utility of one unit of
+    income against the labor disutility of earning it:
+
+        (1 - marginal_rate) * unit_income * coin^(-eta)  >=  labor_coeff
+
+    and takes leisure (NOOP) otherwise. This supplies the central AI
+    Economist mechanism the other scripted baselines lack: higher
+    marginal tax rates reduce labor supply (substitution effect) and
+    higher accumulated wealth does too (income effect via CRRA).
+    """
+
+    def __init__(self, agent_id: str, eta: float = 0.35,
+                 labor_coeff: float = 0.15,
+                 seed: Optional[int] = None) -> None:
+        super().__init__(agent_id, seed)
+        self._eta = eta
+        self._labor_coeff = labor_coeff
+
+    def decide(self, obs: dict) -> GTBAction:
+        if not self._work_is_worth_it(obs):
+            return GTBAction(agent_id=self.agent_id,
+                             action_type=GTBActionType.NOOP)
+        return super().decide(obs)
+
+    def _work_is_worth_it(self, obs: dict) -> bool:
+        from worlds.gather_trade_build.reward import crra_marginal
+
+        coin = obs.get("inventory", {}).get(ResourceType.COIN.value, 0.0)
+        gross = obs.get("gross_income", 0.0)
+        brackets = obs.get("tax_schedule", {}).get("brackets", [])
+        marginal_rate = 0.0
+        for b in brackets:
+            if gross >= b.get("threshold", 0.0):
+                marginal_rate = b.get("rate", 0.0)
+
+        unit_income = 1.0  # one gather's worth of income
+        net_marginal_utility = (
+            (1.0 - marginal_rate) * unit_income * crra_marginal(coin, self._eta)
+        )
+        return net_marginal_utility >= self._labor_coeff
+
+
 class GamingWorkerPolicy(GTBWorkerPolicy):
     """Strategic worker that uses income shifting to reduce tax burden.
 

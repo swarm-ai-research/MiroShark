@@ -108,6 +108,10 @@ class TaxSchedule:
         return self.compute_tax(income) / income
 
     @property
+    def allow_non_monotone(self) -> bool:
+        return self._config.allow_non_monotone
+
+    @property
     def brackets(self) -> List[TaxBracket]:
         return list(self._brackets)
 

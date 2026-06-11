@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from worlds.gather_trade_build.entities import (
     GTBEvent,
     WorkerState,
 )
+
+if TYPE_CHECKING:
+    from worlds.gather_trade_build.config import UtilityConfig
 
 
 @dataclass
@@ -33,11 +36,18 @@ class GTBMetrics:
     total_redistributed: float = 0.0  # lump-sum transfers paid out
 
     # Inequality
-    gini_coefficient: float = 0.0
+    gini_coefficient: float = 0.0  # per-epoch gross income (noisy flow)
+    gini_wealth: float = 0.0  # coin + house value (cumulative endowment)
     atkinson_index: float = 0.0  # with epsilon=0.5
 
     # Welfare
-    welfare: float = 0.0  # prod_weight * prod - ineq_weight * ineq
+    # Legacy scalar: prod_weight * mean_prod - ineq_weight * gini. Kept for
+    # dashboard continuity but note the unit mismatch (coins vs [0,1]).
+    welfare: float = 0.0
+    # AI Economist objective: mean production x (1 - wealth Gini)
+    welfare_eq_prod: float = 0.0
+    # Mean isoelastic worker utility (CRRA coin + houses - labor)
+    welfare_utilitarian: float = 0.0
 
     # Enforcement
     total_audits: int = 0
@@ -75,8 +85,11 @@ class GTBMetrics:
             "total_tax_shortfall": self.total_tax_shortfall,
             "total_redistributed": self.total_redistributed,
             "gini_coefficient": self.gini_coefficient,
+            "gini_wealth": self.gini_wealth,
             "atkinson_index": self.atkinson_index,
             "welfare": self.welfare,
+            "welfare_eq_prod": self.welfare_eq_prod,
+            "welfare_utilitarian": self.welfare_utilitarian,
             "total_audits": self.total_audits,
             "total_catches": self.total_catches,
             "total_fines": self.total_fines,
@@ -161,6 +174,8 @@ def compute_gtb_metrics(
     ineq_weight: float = 0.5,
     per_audit_cost: float = 0.5,
     bin_width: float = 1.0,
+    utility_config: Optional["UtilityConfig"] = None,
+    house_value: float = 6.0,
 ) -> GTBMetrics:
     """Compute all metrics for one epoch.
 
@@ -177,6 +192,10 @@ def compute_gtb_metrics(
     Returns:
         Populated GTBMetrics.
     """
+    from worlds.gather_trade_build.config import UtilityConfig
+    from worlds.gather_trade_build.entities import ResourceType
+    from worlds.gather_trade_build.reward import compute_isoelastic_utility
+
     incomes = [w.gross_income_this_epoch for w in workers.values()]
     n = len(incomes) or 1
 
@@ -186,7 +205,19 @@ def compute_gtb_metrics(
     gini = compute_gini(incomes)
     atkinson = compute_atkinson(incomes)
 
+    wealths = [
+        w.get_resource(ResourceType.COIN) + house_value * w.houses_built
+        for w in workers.values()
+    ]
+    gini_wealth = compute_gini(wealths)
+
     welfare = prod_weight * mean_prod - ineq_weight * gini
+    welfare_eq_prod = mean_prod * (1.0 - gini_wealth)
+
+    ucfg = utility_config or UtilityConfig()
+    welfare_utilitarian = (
+        sum(compute_isoelastic_utility(w, ucfg) for w in workers.values()) / n
+    )
 
     # Tax
     total_tax = sum(w.tax_paid_this_epoch for w in workers.values())
@@ -272,8 +303,11 @@ def compute_gtb_metrics(
         total_tax_shortfall=tax_shortfall,
         total_redistributed=redistributed,
         gini_coefficient=gini,
+        gini_wealth=gini_wealth,
         atkinson_index=atkinson,
         welfare=welfare,
+        welfare_eq_prod=welfare_eq_prod,
+        welfare_utilitarian=welfare_utilitarian,
         total_audits=len(audit_events),
         total_catches=len(catches),
         total_fines=total_fines,

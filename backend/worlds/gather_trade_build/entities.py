@@ -118,6 +118,11 @@ class WorkerState:
     energy: float = 100.0
     max_energy: float = 100.0
 
+    # Labor effort (energy actually spent on actions), for labor
+    # disutility in the isoelastic utility function
+    effort_this_epoch: float = 0.0
+    cumulative_effort: float = 0.0
+
     # Skill multiplier (heterogeneous agents)
     skill_gather: float = 1.0
     skill_build: float = 1.0
@@ -153,6 +158,7 @@ class WorkerState:
         self.gross_income_this_epoch = 0.0
         self.reported_income_this_epoch = 0.0
         self.tax_paid_this_epoch = 0.0
+        self.effort_this_epoch = 0.0
 
 
 @dataclass

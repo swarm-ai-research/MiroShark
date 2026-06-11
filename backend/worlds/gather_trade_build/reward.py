@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+
+from worlds.gather_trade_build.config import UtilityConfig
 from worlds.gather_trade_build.entities import ResourceType, WorkerState
 
 
@@ -23,6 +26,39 @@ def compute_worker_utility(
         + wood_weight * worker.get_resource(ResourceType.WOOD)
         + stone_weight * worker.get_resource(ResourceType.STONE)
         + house_weight * worker.houses_built
+    )
+
+
+def crra(x: float, eta: float) -> float:
+    """Isoelastic (CRRA) utility of consumption x.
+
+    eta=0 is linear; eta -> 1 approaches log. Defined for x >= 0
+    (clamped at a small epsilon to avoid singularities at zero).
+    """
+    x = max(x, 1e-9)
+    if abs(eta - 1.0) < 1e-9:
+        return math.log(x)
+    return (x ** (1.0 - eta) - 1.0) / (1.0 - eta)
+
+
+def crra_marginal(x: float, eta: float) -> float:
+    """Marginal utility u'(x) = x^-eta for the CRRA function."""
+    return max(x, 1e-9) ** (-eta)
+
+
+def compute_isoelastic_utility(
+    worker: WorkerState,
+    cfg: UtilityConfig,
+) -> float:
+    """AI Economist-style worker utility: CRRA coin utility plus house
+    utility minus labor disutility on cumulative effort.
+
+    u = crra(coin; eta) + house_weight * houses - labor_coeff * effort
+    """
+    return (
+        crra(worker.get_resource(ResourceType.COIN), cfg.eta)
+        + cfg.house_weight * worker.houses_built
+        - cfg.labor_coeff * worker.cumulative_effort
     )
 
 

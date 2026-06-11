@@ -10,8 +10,9 @@ from worlds.gather_trade_build.agents import (
     GamingWorkerPolicy,
     GTBWorkerPolicy,
     HonestWorkerPolicy,
+    RationalWorkerPolicy,
 )
-from worlds.gather_trade_build.config import GTBConfig
+from worlds.gather_trade_build.config import GTBConfig, UtilityConfig
 from worlds.gather_trade_build.entities import (
     GTBEvent,
     GTBGridCell,
@@ -25,7 +26,12 @@ from worlds.gather_trade_build.entities import (
 from worlds.gather_trade_build.env import GTBAction, GTBEnvironment
 from worlds.gather_trade_build.metrics import GTBMetrics, compute_gtb_metrics
 from worlds.gather_trade_build.planner import PlannerAgent
-from worlds.gather_trade_build.reward import compute_worker_utility
+from worlds.gather_trade_build.reward import (
+    compute_isoelastic_utility,
+    compute_worker_utility,
+    crra,
+    crra_marginal,
+)
 from worlds.gather_trade_build.runner import GTBScenarioRunner
 from worlds.gather_trade_build.sweep import SweepResult, export_sweep, run_sweep
 from worlds.gather_trade_build.tax_schedule import TaxSchedule
@@ -46,14 +52,19 @@ __all__ = [
     "House",
     "MarketOrder",
     "PlannerAgent",
+    "RationalWorkerPolicy",
     "Resource",
     "ResourceType",
     "SweepResult",
     "TaxSchedule",
     "TradeResult",
+    "UtilityConfig",
     "WorkerState",
     "compute_gtb_metrics",
+    "compute_isoelastic_utility",
     "compute_worker_utility",
+    "crra",
+    "crra_marginal",
     "export_sweep",
     "run_sweep",
 ]

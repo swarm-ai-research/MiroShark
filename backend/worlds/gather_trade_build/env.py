@@ -209,6 +209,7 @@ class GTBEnvironment:
             "position": worker.position,
             "inventory": dict(worker.inventory),
             "energy": worker.energy,
+            "effort_this_epoch": worker.effort_this_epoch,
             "houses_built": worker.houses_built,
             "gross_income": worker.gross_income_this_epoch,
             "deferred_income": worker.deferred_income,
@@ -298,6 +299,13 @@ class GTBEnvironment:
     # Action handlers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _spend_energy(worker: WorkerState, cost: float) -> None:
+        """Deduct energy and book it as labor effort (for labor disutility)."""
+        worker.energy -= cost
+        worker.effort_this_epoch += cost
+        worker.cumulative_effort += cost
+
     def _handle_move(self, worker: WorkerState, direction: Direction) -> GTBEvent:
         delta = _DIR_DELTA.get(direction)
         if delta is None or worker.energy < self._config.energy_cost_move:
@@ -315,7 +323,7 @@ class GTBEnvironment:
         ]
         self._grid[new_r][new_c].occupants.append(worker.agent_id)
         worker.position = (new_r, new_c)
-        worker.energy -= self._config.energy_cost_move
+        self._spend_energy(worker, self._config.energy_cost_move)
 
         return GTBEvent(
             event_type="move", step=self._current_step,
@@ -342,7 +350,7 @@ class GTBEnvironment:
         gathered = min(cell.resource.amount, 1.0 * worker.skill_gather)
         cell.resource.amount -= gathered
         worker.add_resource(cell.resource.resource_type, gathered)
-        worker.energy -= self._config.energy_cost_gather
+        self._spend_energy(worker, self._config.energy_cost_gather)
 
         if self._config.ledger_mode == "legacy":
             # Legacy: gathering books taxable income 1:1 with no coin
@@ -408,7 +416,7 @@ class GTBEnvironment:
         self._houses.append(house)
         self._grid[r][c].house = house
         worker.houses_built += 1
-        worker.energy -= self._config.energy_cost_build
+        self._spend_energy(worker, self._config.energy_cost_build)
 
         return GTBEvent(
             event_type="build", step=self._current_step,
@@ -442,7 +450,7 @@ class GTBEnvironment:
             step=self._current_step,
         )
         self._buy_orders.append(order)
-        worker.energy -= self._config.energy_cost_trade
+        self._spend_energy(worker, self._config.energy_cost_trade)
         return GTBEvent(
             event_type="order_placed", step=self._current_step,
             epoch=self._current_epoch, agent_id=worker.agent_id,
@@ -476,7 +484,7 @@ class GTBEnvironment:
             step=self._current_step,
         )
         self._sell_orders.append(order)
-        worker.energy -= self._config.energy_cost_trade
+        self._spend_energy(worker, self._config.energy_cost_trade)
         return GTBEvent(
             event_type="order_placed", step=self._current_step,
             epoch=self._current_epoch, agent_id=worker.agent_id,
@@ -1134,37 +1142,70 @@ class GTBEnvironment:
         return self._config
 
     def get_aggregate_stats(self) -> Dict[str, float]:
-        """Compute aggregate stats for planner observation."""
-        incomes = [w.gross_income_this_epoch for w in self._workers.values()]
-        coins = [w.get_resource(ResourceType.COIN) for w in self._workers.values()]
-        n = len(incomes) or 1
+        """Compute aggregate stats for planner observation (live workers).
+
+        NOTE: after end_epoch() the per-epoch counters are zeroed; use
+        stats_from_snapshot() with the EpochResult snapshot to give the
+        planner the epoch that actually just closed.
+        """
+        return self._aggregate_stats(self._workers)
+
+    def stats_from_snapshot(
+        self, snapshot: Dict[str, WorkerState],
+    ) -> Dict[str, float]:
+        """Aggregate stats over a pre-reset epoch snapshot (see end_epoch)."""
+        return self._aggregate_stats(snapshot)
+
+    def _aggregate_stats(
+        self, workers: Dict[str, WorkerState],
+    ) -> Dict[str, float]:
+        from worlds.gather_trade_build.metrics import compute_gini
+        from worlds.gather_trade_build.reward import compute_isoelastic_utility
+
+        ws = list(workers.values())
+        incomes = [w.gross_income_this_epoch for w in ws]
+        coins = [w.get_resource(ResourceType.COIN) for w in ws]
+        n = len(ws) or 1
 
         total_income = sum(incomes)
         mean_income = total_income / n
-        total_tax = sum(w.tax_paid_this_epoch for w in self._workers.values())
-        total_houses = sum(w.houses_built for w in self._workers.values())
+        total_tax = sum(w.tax_paid_this_epoch for w in ws)
+        total_houses = sum(w.houses_built for w in ws)
 
-        # Gini coefficient
-        sorted_inc = sorted(incomes)
-        if total_income > 0:
-            cumulative = 0.0
-            gini_sum = 0.0
-            for _i, inc in enumerate(sorted_inc):
-                cumulative += inc
-                gini_sum += cumulative
-            gini = 1.0 - 2.0 * gini_sum / (n * total_income) + 1.0 / n
-        else:
-            gini = 0.0
+        # Wealth = coin + house replacement value (build cost as proxy)
+        house_value = self._config.build.wood_cost + self._config.build.stone_cost
+        wealths = [
+            w.get_resource(ResourceType.COIN) + house_value * w.houses_built
+            for w in ws
+        ]
+
+        # Isoelastic utility (Phase 2 preferences)
+        mean_utility = (
+            sum(compute_isoelastic_utility(w, self._config.utility) for w in ws) / n
+        )
+
+        # Top-bracket stats for the Saez planner
+        thresholds = self._tax_schedule.bracket_thresholds
+        top_threshold = thresholds[-1] if thresholds else 0.0
+        top_incomes = [inc for inc in incomes if inc >= top_threshold]
+        top_mean_income = (
+            sum(top_incomes) / len(top_incomes) if top_incomes else 0.0
+        )
 
         return {
             "total_income": total_income,
             "mean_income": mean_income,
-            "gini": max(0.0, min(1.0, gini)),
+            "gini": compute_gini(incomes),
+            "gini_wealth": compute_gini(wealths),
+            "mean_utility": mean_utility,
             "total_tax_revenue": total_tax,
             "total_houses": total_houses,
             "mean_coin": sum(coins) / n,
             "n_workers": n,
             "n_frozen": len(self._frozen_agents),
+            "top_threshold": top_threshold,
+            "top_mean_income": top_mean_income,
+            "n_top": float(len(top_incomes)),
         }
 
     def compute_incomes(self) -> Dict[str, float]:

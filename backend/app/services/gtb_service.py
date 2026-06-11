@@ -20,6 +20,7 @@ from worlds.gather_trade_build.agents import (
     EvasiveWorkerPolicy,
     GamingWorkerPolicy,
     HonestWorkerPolicy,
+    RationalWorkerPolicy,
 )
 from worlds.gather_trade_build.config import GTBConfig
 from worlds.gather_trade_build.env import GTBAction, GTBEnvironment
@@ -57,49 +58,27 @@ def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, An
 
 
 def _stats_from_snapshot(snapshot, env) -> Dict[str, float]:
-    """Mirror env.get_aggregate_stats() against a pre-reset worker snapshot.
+    """Aggregate planner stats from a pre-reset worker snapshot.
 
     end_epoch() returns a snapshot taken BEFORE per-epoch counters are
     cleared. Reading from there gives the planner the closed-epoch
-    income / tax / Gini it actually wants to react to.
+    income / tax / Gini it actually wants to react to. Delegates to the
+    kernel so the service and the headless runner stay in lockstep.
     """
-    workers = list(snapshot.values())
-    n = len(workers) or 1
-    incomes = [w.gross_income_this_epoch for w in workers]
-    coins = [w.inventory.get("coin", 0.0) for w in workers]
-    total_income = sum(incomes)
-    mean_income = total_income / n
-    total_tax = sum(w.tax_paid_this_epoch for w in workers)
-    total_houses = sum(w.houses_built for w in workers)
-
-    sorted_inc = sorted(incomes)
-    if total_income > 0:
-        cumulative = 0.0
-        gini_sum = 0.0
-        for inc in sorted_inc:
-            cumulative += inc
-            gini_sum += cumulative
-        gini = 1.0 - 2.0 * gini_sum / (n * total_income) + 1.0 / n
-        gini = max(0.0, min(1.0, gini))
-    else:
-        gini = 0.0
-
-    return {
-        "total_income": total_income,
-        "mean_income": mean_income,
-        "gini": gini,
-        "total_tax_revenue": total_tax,
-        "total_houses": total_houses,
-        "mean_coin": sum(coins) / n,
-        "n_workers": n,
-        "n_frozen": len(getattr(env, "_frozen_agents", [])),
-    }
+    return env.stats_from_snapshot(snapshot)
 
 
 def _make_policy(spec: Dict[str, Any], agent_id: str, seed: int):
     kind = spec.get("policy", "honest")
     if kind == "honest":
         return HonestWorkerPolicy(agent_id=agent_id, seed=seed)
+    if kind == "rational":
+        return RationalWorkerPolicy(
+            agent_id=agent_id,
+            seed=seed,
+            eta=spec.get("eta", 0.35),
+            labor_coeff=spec.get("labor_coeff", 0.15),
+        )
     if kind == "gaming":
         return GamingWorkerPolicy(
             agent_id=agent_id,
@@ -363,6 +342,10 @@ class GTBWorldService:
             bracket_thresholds=self._env.tax_schedule.bracket_thresholds,
             prod_weight=self._config.planner.prod_weight,
             ineq_weight=self._config.planner.ineq_weight,
+            utility_config=self._config.utility,
+            house_value=(
+                self._config.build.wood_cost + self._config.build.stone_cost
+            ),
         )
         self._epoch_metrics.append(metrics)
         metrics_dict = self._metrics_to_dict(metrics)
@@ -499,7 +482,10 @@ class GTBWorldService:
             "epoch": m.epoch,
             "total_production": m.total_production,
             "gini_coefficient": m.gini_coefficient,
+            "gini_wealth": m.gini_wealth,
             "welfare": m.welfare,
+            "welfare_eq_prod": m.welfare_eq_prod,
+            "welfare_utilitarian": m.welfare_utilitarian,
             "total_tax_revenue": m.total_tax_revenue,
             "total_audits": m.total_audits,
             "total_catches": m.total_catches,

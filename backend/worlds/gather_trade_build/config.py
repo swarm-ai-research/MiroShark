@@ -116,16 +116,37 @@ class BuildConfig:
 
 
 @dataclass
+class UtilityConfig:
+    """Isoelastic (CRRA) worker preferences with labor disutility.
+
+    u = crra(coin; eta) + house_weight * houses - labor_coeff * effort
+    where effort is energy actually spent on actions. eta=0 reduces to
+    linear coin utility; eta -> 1 approaches log utility.
+    """
+
+    eta: float = 0.35  # coefficient of relative risk aversion
+    labor_coeff: float = 0.15  # disutility per unit of energy spent
+    house_weight: float = 5.0  # utility per house owned
+
+
+@dataclass
 class PlannerConfig:
     """Configuration for the planner agent."""
 
-    planner_type: str = "heuristic"  # heuristic | bandit | rl
+    planner_type: str = "heuristic"  # heuristic | bandit | saez | rl
     objective: str = "welfare"
     prod_weight: float = 1.0
     ineq_weight: float = 0.5
     learning_rate: float = 0.01
     exploration_rate: float = 0.1
     update_interval_epochs: int = 1
+    # Which Gini the planner reacts to: income (legacy, noisy per-epoch
+    # flow) or wealth (cumulative endowment, AI Economist semantics)
+    inequality_measure: str = "income"
+    # Saez planner: elasticity estimate bounds and smoothing
+    saez_elasticity_init: float = 0.5
+    saez_elasticity_lr: float = 0.3  # EMA weight for new elasticity estimates
+    saez_rate_change_cap: float = 0.05  # max top-rate move per update
 
 
 @dataclass
@@ -137,6 +158,7 @@ class GTBConfig:
     build: BuildConfig = field(default_factory=BuildConfig)
     taxation: TaxScheduleConfig = field(default_factory=TaxScheduleConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
+    utility: UtilityConfig = field(default_factory=UtilityConfig)
     gaming: GamingConfig = field(default_factory=GamingConfig)
     misreporting: MisreportingConfig = field(default_factory=MisreportingConfig)
     collusion: CollusionConfig = field(default_factory=CollusionConfig)
@@ -205,7 +227,16 @@ class GTBConfig:
             k: planner_data[k] for k in (
                 "planner_type", "objective", "prod_weight", "ineq_weight",
                 "learning_rate", "exploration_rate", "update_interval_epochs",
+                "inequality_measure", "saez_elasticity_init",
+                "saez_elasticity_lr", "saez_rate_change_cap",
             ) if k in planner_data
+        })
+
+        utility_data = data.get("utility", {})
+        utility_cfg = UtilityConfig(**{
+            k: utility_data[k] for k in (
+                "eta", "labor_coeff", "house_weight",
+            ) if k in utility_data
         })
 
         gaming_data = data.get("gaming", {})
@@ -243,6 +274,7 @@ class GTBConfig:
             build=build_cfg,
             taxation=tax_cfg,
             planner=planner_cfg,
+            utility=utility_cfg,
             gaming=gaming_cfg,
             misreporting=misreport_cfg,
             collusion=collusion_cfg,

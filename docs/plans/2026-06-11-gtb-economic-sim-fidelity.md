@@ -1,5 +1,19 @@
 # GTB Economic Sim — High-Fidelity Plan
 
+> **Execution status (2026-06-11):** Phases 0–5 are implemented, tested,
+> and merged on this branch. Every behavioral change is behind a config
+> flag with the legacy default preserved. Acceptance evidence lives in
+> `backend/worlds/gather_trade_build/baselines/` (pre-Phase-1 legacy
+> baseline, Phase 1 coherent-ledger acceptance, Phase 2 Saez acceptance)
+> and in the per-phase test files `test_unit_gtb_{sweep,ledger,utility,
+> market,enforcement}.py` plus additions to `test_unit_gtb_service.py`.
+> Beads closed: cec (sweep harness), ih5 (audit_miss filter), 4jr (trade
+> activation). Remaining: Phase 6's stylized-fact CI suite + GTB_MODEL.md,
+> and the experiment beads the harness now unblocks (an2 audit-rate sweep,
+> mit prediction-market calibration, vel/yy1 housing studies, rej
+> CLAUDE.md caveat, coq long-horizon planner study — note the runner
+> planner-stats fix in Phase 2 changes coq's baseline behavior).
+
 **Date:** 2026-06-11
 **Scope:** `backend/worlds/gather_trade_build/` (the GTB kernel), plus the
 service layer in `backend/app/services/gtb_service.py` / `gtb_llm_agent.py`

@@ -61,6 +61,28 @@ class MisreportingConfig:
     freeze_on_repeat: bool = True
     freeze_after_n_catches: int = 3
     freeze_duration_epochs: int = 2
+    # Misreport semantics:
+    #   event  — legacy: MISREPORT rewrites reported income at that
+    #            instant; income earned afterwards re-fills reported at
+    #            full value (gather) or fractionally (house), so the
+    #            hidden share depends on action ordering
+    #   stance — the declared fraction is a per-epoch stance; reported
+    #            income is derived once at epoch close as
+    #            gross * (1 - fraction), uniformly
+    semantics: str = "event"
+    # Audit selection:
+    #   discrepancy — legacy: selection conditions on the TRUE gap
+    #                 between gross and reported income (the auditor
+    #                 reads minds), and selection implies conviction
+    #   observable  — selection risk-scores only what a tax authority
+    #                 can see (reported income vs coin actually received
+    #                 from houses and market sales); anyone can be
+    #                 selected, honest audits surface as false positives,
+    #                 and conviction requires detection_power to fire
+    selection_mode: str = "discrepancy"
+    # P(an audit of a truly discrepant worker finds the discrepancy).
+    # Only used in observable mode; legacy mode convicts with certainty.
+    detection_power: float = 1.0
 
 
 @dataclass
@@ -76,6 +98,13 @@ class CollusionConfig:
     response_audit_multiplier: float = 2.0
     response_stake_increase: float = 1.5
     response_trade_restriction_epochs: int = 1
+    # Market-based detector: flags pairs that post >= min_asks sell
+    # orders each in an epoch at near-identical prices (price-fixing
+    # signature). Detection method recorded on the event so detector
+    # precision/recall can be measured against true coalition labels.
+    detect_price_fixing: bool = True
+    price_fixing_min_asks: int = 2
+    price_fixing_price_tolerance: float = 0.01  # relative mean-price gap
 
 
 @dataclass
@@ -262,6 +291,7 @@ class GTBConfig:
                 "risk_based_audit_multiplier", "fine_multiplier",
                 "reputation_penalty_per_catch", "freeze_on_repeat",
                 "freeze_after_n_catches", "freeze_duration_epochs",
+                "semantics", "selection_mode", "detection_power",
             ) if k in misreport_data
         })
 
@@ -272,6 +302,8 @@ class GTBConfig:
                 "detection_window_steps", "similarity_threshold",
                 "suspicion_score_threshold", "response_audit_multiplier",
                 "response_stake_increase", "response_trade_restriction_epochs",
+                "detect_price_fixing", "price_fixing_min_asks",
+                "price_fixing_price_tolerance",
             ) if k in collusion_data
         })
 

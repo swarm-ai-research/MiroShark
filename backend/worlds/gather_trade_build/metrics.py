@@ -68,6 +68,11 @@ class GTBMetrics:
     # Collusion
     collusion_events_detected: int = 0
     collusion_suspicion_mean: float = 0.0
+    # Detector quality vs true coalition labels. Conventions when
+    # undefined: precision = 1.0 with no flags (no false alarms),
+    # recall = 1.0 with no true coalition pairs (nothing to find).
+    collusion_precision: float = 1.0
+    collusion_recall: float = 1.0
 
     # SWARM systemic-risk
     exploit_frequency: float = 0.0  # misreport + collusion events / total events
@@ -104,6 +109,8 @@ class GTBMetrics:
             "bunching_intensity": self.bunching_intensity,
             "collusion_events_detected": self.collusion_events_detected,
             "collusion_suspicion_mean": self.collusion_suspicion_mean,
+            "collusion_precision": self.collusion_precision,
+            "collusion_recall": self.collusion_recall,
             "exploit_frequency": self.exploit_frequency,
             "governance_backfire_events": self.governance_backfire_events,
             "variance_amplification": self.variance_amplification,
@@ -242,11 +249,11 @@ def compute_gtb_metrics(
         ) / n
     )
 
-    # Enforcement. The env stopped emitting `audit_miss` when audit
-    # selection was fixed (unselected workers are simply not observed),
-    # so undetected evasion is measured on hidden income instead: the
+    # Enforcement. Undetected evasion is measured on hidden income: the
     # share of (gross - reported) belonging to workers no audit caught.
-    audit_events = [e for e in events if e.event_type in ("audit_caught", "audit_false_positive")]
+    # audit_miss exists again under selection_mode=observable (a selected
+    # audit that failed its detection_power roll) and counts as an audit.
+    audit_events = [e for e in events if e.event_type in ("audit_caught", "audit_miss", "audit_false_positive")]
     catches = [e for e in events if e.event_type == "audit_caught"]
     caught_agents = {e.agent_id for e in catches}
     hidden_total = 0.0
@@ -273,6 +280,28 @@ def compute_gtb_metrics(
     ]
     mean_suspicion = (
         sum(suspicion_scores) / len(suspicion_scores) if suspicion_scores else 0.0
+    )
+
+    # Detector precision/recall vs true coalition labels
+    flagged_pairs = set()
+    for e in collusion_events:
+        agents = e.details.get("agents", [])
+        if len(agents) == 2:
+            flagged_pairs.add(frozenset(agents))
+    true_pairs = set()
+    worker_items = list(workers.items())
+    for a in range(len(worker_items)):
+        for b in range(a + 1, len(worker_items)):
+            aid_a, w_a = worker_items[a]
+            aid_b, w_b = worker_items[b]
+            if w_a.coalition_id is not None and w_a.coalition_id == w_b.coalition_id:
+                true_pairs.add(frozenset((aid_a, aid_b)))
+    true_positive_pairs = flagged_pairs & true_pairs
+    precision = (
+        len(true_positive_pairs) / len(flagged_pairs) if flagged_pairs else 1.0
+    )
+    recall = (
+        len(true_positive_pairs) / len(true_pairs) if true_pairs else 1.0
     )
 
     # SWARM systemic-risk metrics
@@ -328,6 +357,8 @@ def compute_gtb_metrics(
         bunching_intensity=bunching,
         collusion_events_detected=len(collusion_events),
         collusion_suspicion_mean=mean_suspicion,
+        collusion_precision=precision,
+        collusion_recall=recall,
         exploit_frequency=exploit_freq,
         governance_backfire_events=sum(
             1 for e in events if e.event_type == "audit_false_positive"

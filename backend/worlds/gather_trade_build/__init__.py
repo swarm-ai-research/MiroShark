@@ -5,6 +5,7 @@ trade in markets, and build houses, while a Planner agent sets tax policy.
 """
 
 from worlds.gather_trade_build.agents import (
+    CartelWorkerPolicy,
     CollusiveWorkerPolicy,
     EvasiveWorkerPolicy,
     GamingWorkerPolicy,
@@ -38,6 +39,7 @@ from worlds.gather_trade_build.sweep import SweepResult, export_sweep, run_sweep
 from worlds.gather_trade_build.tax_schedule import TaxSchedule
 
 __all__ = [
+    "CartelWorkerPolicy",
     "CollusiveWorkerPolicy",
     "EvasiveWorkerPolicy",
     "GamingWorkerPolicy",

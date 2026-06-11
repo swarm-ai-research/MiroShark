@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from worlds.gather_trade_build.agents import (
+    CartelWorkerPolicy,
     CollusiveWorkerPolicy,
     EvasiveWorkerPolicy,
     GamingWorkerPolicy,
@@ -76,6 +77,14 @@ def _create_policy(
             underreport_fraction=agent_spec.get("underreport_fraction", 0.3),
             seed=seed,
         )
+    elif ptype == "cartel":
+        return CartelWorkerPolicy(
+            agent_id,
+            coalition_id=agent_spec.get("coalition_id", "default"),
+            cartel_price=agent_spec.get("cartel_price", 4.0),
+            order_qty=agent_spec.get("order_qty", 1.0),
+            seed=seed,
+        )
     elif ptype == "collusive":
         return CollusiveWorkerPolicy(
             agent_id,
@@ -127,8 +136,8 @@ class GTBScenarioRunner:
                 )
                 self._policies[agent_id] = policy
 
-                # Set coalition if collusive
-                if spec.get("policy") == "collusive":
+                # Set coalition if collusive/cartel
+                if spec.get("policy") in ("collusive", "cartel"):
                     worker = self._env.workers[agent_id]
                     worker.coalition_id = spec.get("coalition_id", "default")
 

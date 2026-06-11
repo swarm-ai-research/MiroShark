@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from worlds.gather_trade_build.agents import (
+    CartelWorkerPolicy,
     CollusiveWorkerPolicy,
     EvasiveWorkerPolicy,
     GamingWorkerPolicy,
@@ -100,6 +101,14 @@ def _make_policy(spec: Dict[str, Any], agent_id: str, seed: int):
             seed=seed,
             underreport_fraction=spec.get("underreport_fraction", 0.3),
         )
+    if kind == "cartel":
+        return CartelWorkerPolicy(
+            agent_id=agent_id,
+            seed=seed,
+            coalition_id=spec.get("coalition_id", "default"),
+            cartel_price=spec.get("cartel_price", 4.0),
+            order_qty=spec.get("order_qty", 1.0),
+        )
     if kind == "collusive":
         return CollusiveWorkerPolicy(
             agent_id=agent_id,
@@ -152,7 +161,7 @@ class GTBWorldService:
                 self._policies[agent_id] = _make_policy(
                     spec, agent_id, seed + next_id
                 )
-                if spec.get("policy") == "collusive":
+                if spec.get("policy") in ("collusive", "cartel"):
                     self._env.workers[agent_id].coalition_id = spec.get(
                         "coalition_id", "default"
                     )

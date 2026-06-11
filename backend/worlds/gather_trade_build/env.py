@@ -104,6 +104,7 @@ class GTBEnvironment:
 
         # Collusion tracking
         self._action_traces: Dict[str, List[str]] = {}  # agent_id -> recent actions
+        self._ask_history: Dict[str, List[float]] = {}  # agent_id -> ask prices this epoch
 
         # Misreport fractions per agent for current epoch (applied to future income)
         self._misreport_fractions: Dict[str, float] = {}
@@ -541,6 +542,7 @@ class GTBEnvironment:
                 )
             worker.remove_resource(action.resource_type, qty)
         self._sell_orders.append(order)
+        self._ask_history.setdefault(worker.agent_id, []).append(price)
         self._spend_energy(worker, self._config.energy_cost_trade)
         return GTBEvent(
             event_type="order_placed", step=self._current_step,
@@ -591,6 +593,18 @@ class GTBEnvironment:
             )
         frac = min(action.underreport_fraction, cfg.max_underreport_fraction)
         frac = max(0.0, frac)
+        if cfg.semantics == "stance":
+            # The fraction is a per-epoch stance; reported income is
+            # derived once at epoch close as gross * (1 - fraction),
+            # so the hidden share cannot depend on action ordering.
+            self._misreport_fractions[worker.agent_id] = frac
+            return GTBEvent(
+                event_type="misreport", step=self._current_step,
+                epoch=self._current_epoch, agent_id=worker.agent_id,
+                details={"underreport_fraction": frac, "semantics": "stance"},
+            )
+
+        # Legacy event semantics: rewrite reported income at this instant
         hidden = worker.gross_income_this_epoch * frac
         worker.reported_income_this_epoch = worker.gross_income_this_epoch - hidden
         # Track fraction so future income (house income) also applies it
@@ -639,10 +653,14 @@ class GTBEnvironment:
                 self._coin_earned_this_epoch.get(house.owner_id, 0.0) + income
             )
             worker.gross_income_this_epoch += income
-            # Only add to reported income the non-hidden fraction.
-            # If the worker has misreported, the underreport fraction applies
-            # to all income including house income (prevents partial undo).
-            misreport_frac = self._misreport_fractions.get(worker.agent_id, 0.0)
+            # Legacy event semantics: the underreport fraction applies to
+            # all income including house income (prevents partial undo).
+            # In stance mode reported income is derived at epoch close,
+            # so it accrues at full value here.
+            if self._config.misreporting.semantics == "stance":
+                misreport_frac = 0.0
+            else:
+                misreport_frac = self._misreport_fractions.get(worker.agent_id, 0.0)
             reported_portion = income * (1.0 - misreport_frac)
             worker.reported_income_this_epoch += reported_portion
             worker.cumulative_income += income
@@ -856,6 +874,16 @@ class GTBEnvironment:
         if self._config.market.order_ttl_steps > 0:
             events.extend(self._expire_orders(force_all=True))
 
+        # 0b. Stance-mode misreporting: derive reported income uniformly
+        # from the declared fraction, before taxes are computed on it.
+        if self._config.misreporting.semantics == "stance":
+            for agent_id, frac in self._misreport_fractions.items():
+                worker = self._workers.get(agent_id)
+                if worker is not None and frac > 0:
+                    worker.reported_income_this_epoch = (
+                        worker.gross_income_this_epoch * (1.0 - frac)
+                    )
+
         # 1. Collect taxes (only what can actually be paid)
         debt_enabled = self._config.taxation.debt_enabled
         for agent_id, worker in self._workers.items():
@@ -976,6 +1004,7 @@ class GTBEnvironment:
         self._misreport_fractions.clear()
         self._coin_earned_this_epoch.clear()
         self._volume_this_epoch.clear()
+        self._ask_history.clear()
 
         self._current_epoch += 1
         self._current_step = 0
@@ -987,11 +1016,112 @@ class GTBEnvironment:
 
         return EpochResult(events=events, snapshot=snapshot)
 
+    def _apply_audit_catch(self, agent_id: str, worker: WorkerState,
+                            discrepancy: float) -> List[GTBEvent]:
+        """Settle a successful audit: fine, debt, freeze. Shared by both
+        selection modes."""
+        cfg = self._config.misreporting
+        events: List[GTBEvent] = []
+        evaded_tax = self._tax_schedule.compute_tax(
+            worker.gross_income_this_epoch
+        ) - self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
+        fine_owed = evaded_tax * cfg.fine_multiplier
+        coin_balance = worker.get_resource(ResourceType.COIN)
+        fine_paid = min(fine_owed, coin_balance)
+        worker.remove_resource(ResourceType.COIN, fine_paid)
+        self._ledger_burn("fines", fine_paid)
+        self._treasury += fine_paid
+        if self._config.taxation.debt_enabled and fine_owed > fine_paid:
+            worker.tax_debt += fine_owed - fine_paid
+        worker.times_caught += 1
+        worker.total_fines += fine_paid
+
+        events.append(GTBEvent(
+            event_type="audit_caught", epoch=self._current_epoch,
+            agent_id=agent_id,
+            details={
+                "discrepancy": discrepancy,
+                "evaded_tax": evaded_tax,
+                "fine_owed": fine_owed,
+                "fine": fine_paid,
+                "shortfall": fine_owed - fine_paid,
+                "times_caught": worker.times_caught,
+            },
+        ))
+
+        if cfg.freeze_on_repeat and worker.times_caught >= cfg.freeze_after_n_catches:
+            self._frozen_agents[agent_id] = (
+                self._current_epoch + cfg.freeze_duration_epochs
+            )
+            events.append(GTBEvent(
+                event_type="freeze", epoch=self._current_epoch,
+                agent_id=agent_id,
+                details={"until_epoch": self._current_epoch + cfg.freeze_duration_epochs},
+            ))
+        return events
+
+    def _run_audits_observable(self) -> List[GTBEvent]:
+        """Observable-information audit pipeline (selection_mode=observable).
+
+        The tax authority risk-scores only what it can see: reported
+        income vs coin verifiably received this epoch (house payouts and
+        market sale proceeds — both on public records). Income from
+        unobserved activity (gathering, in legacy ledger mode) generates
+        no suspicion, so evasion on it is genuinely hard to catch.
+        Anyone can be selected; audits of honest workers surface as
+        audit_false_positive, and audits of misreporters succeed only
+        with probability detection_power (audit_miss otherwise).
+        """
+        cfg = self._config.misreporting
+        events: List[GTBEvent] = []
+        for agent_id, worker in self._workers.items():
+            observable = self._coin_earned_this_epoch.get(agent_id, 0.0)
+            reported = worker.reported_income_this_epoch
+            if observable > 1e-9:
+                suspicion = max(0.0, (observable - reported) / observable)
+            else:
+                suspicion = 0.0
+            audit_prob = cfg.audit_probability * (
+                1.0 + cfg.risk_based_audit_multiplier * suspicion
+            )
+            collusion_boost = self._collusion_audit_boost.get(agent_id, 0.0)
+            if collusion_boost > 0:
+                audit_prob += collusion_boost * cfg.audit_probability
+            audit_prob = min(1.0, audit_prob)
+
+            if self._rng.random() >= audit_prob:
+                continue
+            worker.times_audited += 1
+
+            discrepancy = (
+                worker.gross_income_this_epoch - worker.reported_income_this_epoch
+            )
+            if discrepancy < 1e-9:
+                events.append(GTBEvent(
+                    event_type="audit_false_positive",
+                    epoch=self._current_epoch, agent_id=agent_id,
+                    details={"suspicion": suspicion,
+                              "collusion_boost": collusion_boost},
+                ))
+                continue
+            if self._rng.random() >= cfg.detection_power:
+                events.append(GTBEvent(
+                    event_type="audit_miss", epoch=self._current_epoch,
+                    agent_id=agent_id,
+                    details={"discrepancy": discrepancy,
+                              "detection_power": cfg.detection_power},
+                ))
+                continue
+            events.extend(self._apply_audit_catch(agent_id, worker, discrepancy))
+        return events
+
     def _run_audits(self) -> List[GTBEvent]:
         """Run audit pipeline for the current epoch."""
         cfg = self._config.misreporting
         if not cfg.enabled:
             return []
+        if cfg.selection_mode == "observable":
+            return self._run_audits_observable()
 
         events: List[GTBEvent] = []
         for agent_id, worker in self._workers.items():
@@ -1022,43 +1152,7 @@ class GTBEnvironment:
             worker.times_audited += 1
 
             # Selected for audit: discrepancy is observed -> always caught.
-            evaded_tax = self._tax_schedule.compute_tax(
-                worker.gross_income_this_epoch
-            ) - self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
-            fine_owed = evaded_tax * cfg.fine_multiplier
-            coin_balance = worker.get_resource(ResourceType.COIN)
-            fine_paid = min(fine_owed, coin_balance)
-            worker.remove_resource(ResourceType.COIN, fine_paid)
-            self._ledger_burn("fines", fine_paid)
-            self._treasury += fine_paid
-            if self._config.taxation.debt_enabled and fine_owed > fine_paid:
-                worker.tax_debt += fine_owed - fine_paid
-            worker.times_caught += 1
-            worker.total_fines += fine_paid
-
-            events.append(GTBEvent(
-                event_type="audit_caught", epoch=self._current_epoch,
-                agent_id=agent_id,
-                details={
-                    "discrepancy": discrepancy,
-                    "evaded_tax": evaded_tax,
-                    "fine_owed": fine_owed,
-                    "fine": fine_paid,
-                    "shortfall": fine_owed - fine_paid,
-                    "times_caught": worker.times_caught,
-                },
-            ))
-
-            # Freeze on repeat offenders
-            if cfg.freeze_on_repeat and worker.times_caught >= cfg.freeze_after_n_catches:
-                self._frozen_agents[agent_id] = (
-                    self._current_epoch + cfg.freeze_duration_epochs
-                )
-                events.append(GTBEvent(
-                    event_type="freeze", epoch=self._current_epoch,
-                    agent_id=agent_id,
-                    details={"until_epoch": self._current_epoch + cfg.freeze_duration_epochs},
-                ))
+            events.extend(self._apply_audit_catch(agent_id, worker, discrepancy))
 
         # False-positive pass: audit honest agents flagged by collusion boost.
         # These agents have no actual discrepancy, so they can never be "caught",
@@ -1086,10 +1180,84 @@ class GTBEnvironment:
     # Collusion detection
     # ------------------------------------------------------------------
 
+    def _apply_collusion_response(self, aid_a: str, aid_b: str) -> List[str]:
+        """Apply configured responses (audit boost, trade restriction) to a
+        flagged pair. Returns the list of responses applied."""
+        cfg = self._config.collusion
+        responses_applied: List[str] = []
+        for aid in (aid_a, aid_b):
+            current_extra = self._collusion_audit_boost.get(aid, 0.0)
+            boost = cfg.response_audit_multiplier - 1.0
+            self._collusion_audit_boost[aid] = min(current_extra + boost, 5.0)
+            responses_applied.append("audit_boost")
+        if cfg.response_trade_restriction_epochs > 0:
+            restrict_until = (
+                self._current_epoch + cfg.response_trade_restriction_epochs
+            )
+            for aid in (aid_a, aid_b):
+                self._trade_restricted[aid] = max(
+                    self._trade_restricted.get(aid, 0), restrict_until,
+                )
+            responses_applied.append("trade_restriction")
+        return responses_applied
+
+    def _detect_price_fixing(self) -> List[GTBEvent]:
+        """Market-based collusion detector: flags pairs that each posted
+        several sell orders this epoch at near-identical prices — the
+        signature of a price-fixing cartel. Works from public market
+        records only, so it can be wrong in both directions: independent
+        traders can quote alike (false positive), cartels quoting with
+        jitter slip through (false negative). Detector quality is
+        measured downstream as precision/recall against true coalition
+        labels.
+        """
+        cfg = self._config.collusion
+        events: List[GTBEvent] = []
+        candidates = {
+            aid: prices for aid, prices in self._ask_history.items()
+            if len(prices) >= cfg.price_fixing_min_asks
+        }
+        aids = sorted(candidates)
+        for i in range(len(aids)):
+            for j in range(i + 1, len(aids)):
+                aid_a, aid_b = aids[i], aids[j]
+                mean_a = sum(candidates[aid_a]) / len(candidates[aid_a])
+                mean_b = sum(candidates[aid_b]) / len(candidates[aid_b])
+                denom = max(mean_a, mean_b, 1e-9)
+                rel_gap = abs(mean_a - mean_b) / denom
+                if rel_gap > cfg.price_fixing_price_tolerance:
+                    continue
+                worker_a = self._workers.get(aid_a)
+                worker_b = self._workers.get(aid_b)
+                if worker_a is None or worker_b is None:
+                    continue
+                same_coalition = (
+                    worker_a.coalition_id is not None
+                    and worker_a.coalition_id == worker_b.coalition_id
+                )
+                responses = self._apply_collusion_response(aid_a, aid_b)
+                events.append(GTBEvent(
+                    event_type="collusion_detected",
+                    epoch=self._current_epoch,
+                    details={
+                        "agents": [aid_a, aid_b],
+                        "method": "price_fixing",
+                        "mean_ask_a": mean_a,
+                        "mean_ask_b": mean_b,
+                        "relative_gap": rel_gap,
+                        "suspicion_score": 1.0 - rel_gap,
+                        "same_coalition": same_coalition,
+                        "responses": responses,
+                    },
+                ))
+        return events
+
     def detect_collusion(self) -> List[GTBEvent]:
         """Detect potential collusion among workers.
 
-        Uses action-trace similarity over a rolling window.
+        Two detectors:
+          - action-trace similarity over a rolling window (legacy)
+          - price-fixing signature on posted asks (collusion.detect_price_fixing)
 
         Returns:
             List of collusion detection events.
@@ -1099,6 +1267,8 @@ class GTBEnvironment:
             return []
 
         events: List[GTBEvent] = []
+        if cfg.detect_price_fixing:
+            events.extend(self._detect_price_fixing())
         agent_ids = list(self._action_traces.keys())
 
         for i in range(len(agent_ids)):
@@ -1135,36 +1305,15 @@ class GTBEnvironment:
                         suspicion = min(1.0, suspicion * 1.3)
 
                     if suspicion >= cfg.suspicion_score_threshold:
-                        # Apply response actions
-                        responses_applied = []
-
-                        # Increase audit probability for flagged agents
-                        for aid in (aid_a, aid_b):
-                            current_extra = self._collusion_audit_boost.get(aid, 0.0)
-                            boost = cfg.response_audit_multiplier - 1.0
-                            self._collusion_audit_boost[aid] = min(
-                                current_extra + boost, 5.0,
-                            )
-                            responses_applied.append("audit_boost")
-
-                        # Temporary trade restriction
-                        if cfg.response_trade_restriction_epochs > 0:
-                            restrict_until = (
-                                self._current_epoch
-                                + cfg.response_trade_restriction_epochs
-                            )
-                            for aid in (aid_a, aid_b):
-                                self._trade_restricted[aid] = max(
-                                    self._trade_restricted.get(aid, 0),
-                                    restrict_until,
-                                )
-                            responses_applied.append("trade_restriction")
-
+                        responses_applied = self._apply_collusion_response(
+                            aid_a, aid_b,
+                        )
                         events.append(GTBEvent(
                             event_type="collusion_detected",
                             epoch=self._current_epoch,
                             details={
                                 "agents": [aid_a, aid_b],
+                                "method": "action_trace",
                                 "similarity": similarity,
                                 "suspicion_score": suspicion,
                                 "same_coalition": same_coalition,

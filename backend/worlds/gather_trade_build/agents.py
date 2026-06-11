@@ -368,6 +368,64 @@ class ZITraderPolicy(GTBWorkerPolicy):
         return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
 
 
+class CartelWorkerPolicy(GTBWorkerPolicy):
+    """Price-fixing cartel member — collusion with a real economic channel.
+
+    Every member of the coalition quotes the same elevated ask price
+    (the cartel agreement) and never undercuts. When the cartel controls
+    enough of the sell-side liquidity, buyers must pay the cartel price,
+    raising members' sale income above the competitive level. Unlike
+    CollusiveWorkerPolicy (which merely synchronizes action strings and
+    gains nothing), this cartel profits, and is detectable from public
+    market records via the price-fixing signature: near-identical asks
+    across members. Requires a persistent order book
+    (market.order_ttl_steps > 0) and buy-side demand to bite.
+    """
+
+    def __init__(self, agent_id: str, coalition_id: str,
+                 cartel_price: float = 4.0, order_qty: float = 1.0,
+                 seed: Optional[int] = None) -> None:
+        super().__init__(agent_id, seed)
+        self.coalition_id = coalition_id
+        self._cartel_price = cartel_price
+        self._order_qty = order_qty
+
+    def decide(self, obs: dict) -> GTBAction:
+        energy = obs.get("energy", 0)
+        inventory = obs.get("inventory", {})
+
+        # Quote the cartel price on any sellable surplus
+        if energy >= 0.5:
+            for rtype in (ResourceType.WOOD, ResourceType.STONE):
+                held = inventory.get(rtype.value, 0.0)
+                if held >= self._order_qty:
+                    return GTBAction(
+                        agent_id=self.agent_id,
+                        action_type=GTBActionType.TRADE_SELL,
+                        resource_type=rtype,
+                        quantity=min(self._order_qty, held),
+                        price=self._cartel_price,
+                    )
+
+        # Restock like an honest gatherer
+        if energy >= 1.0:
+            pos = obs.get("position", (0, 0))
+            for cell in obs.get("visible_cells", []):
+                if cell.get("pos") == tuple(pos) and "resource" in cell:
+                    if cell.get("amount", 0) > 0:
+                        return GTBAction(
+                            agent_id=self.agent_id,
+                            action_type=GTBActionType.GATHER,
+                        )
+            return GTBAction(
+                agent_id=self.agent_id,
+                action_type=GTBActionType.MOVE,
+                direction=self._random_direction(),
+            )
+
+        return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+
+
 class CollusiveWorkerPolicy(GTBWorkerPolicy):
     """Worker that coordinates with coalition members.
 

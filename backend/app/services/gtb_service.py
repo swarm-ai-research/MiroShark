@@ -131,6 +131,31 @@ def _make_policy(spec: Dict[str, Any], agent_id: str, seed: int):
         # The world drives these via a single batched LLM call per tick.
         # The per-agent policy is honest-fallback used if the batch fails.
         return HonestWorkerPolicy(agent_id=agent_id, seed=seed)
+    if kind == "maker":
+        from worlds.gather_trade_build.agents import MakerWorkerPolicy
+        return MakerWorkerPolicy(
+            agent_id=agent_id,
+            seed=seed,
+            sell_markup=spec.get("sell_markup", 0.2),
+            buy_discount=spec.get("buy_discount", 0.2),
+            target_inventory=spec.get("target_inventory", 5.0),
+        )
+    if kind == "market_aware":
+        from worlds.gather_trade_build.agents import MarketAwareHonestPolicy
+        return MarketAwareHonestPolicy(
+            agent_id=agent_id,
+            seed=seed,
+            build_wood_threshold=spec.get("build_wood_threshold", 3.0),
+            build_stone_threshold=spec.get("build_stone_threshold", 3.0),
+        )
+    if kind == "tax_aware":
+        from worlds.gather_trade_build.agents import TaxAwareHonestPolicy
+        return TaxAwareHonestPolicy(
+            agent_id=agent_id,
+            seed=seed,
+            rate_threshold=spec.get("rate_threshold", 0.30),
+            effort_suppression=spec.get("effort_suppression", 0.7),
+        )
     raise ValueError(f"Unknown policy: {kind}")
 
 

@@ -40,6 +40,29 @@ class PlannerAgent:
         self._prev_welfare: Optional[float] = None
         self._prev_action: Optional[List[TaxBracket]] = None
 
+        # RL state (REINFORCE-style online policy gradient).
+        # Linear policy parameters: per-bracket bias + per-stat weights.
+        # State features: [mean_income, gini, n_frozen, 1.0 bias]
+        # Action: per-bracket mean rate, sampled Normal(mean, sigma).
+        self._rl_features = ("mean_income", "gini", "n_frozen")
+        n_brackets = len(self._tax_schedule.brackets)
+        n_features = len(self._rl_features) + 1
+        # Initialize to small noise around current rates.
+        init_rates = [b.rate for b in self._tax_schedule.brackets]
+        self._rl_weights: List[List[float]] = [
+            [0.0] * n_features for _ in range(n_brackets)
+        ]
+        # Bias term in the last slot initialized to current rate so the
+        # initial policy matches the configured schedule.
+        for i in range(n_brackets):
+            self._rl_weights[i][-1] = init_rates[i]
+        self._rl_sigma: float = 0.05
+        self._rl_baseline: float = 0.0
+        self._rl_baseline_alpha: float = 0.1
+        self._rl_lr: float = 0.02
+        self._rl_prev_features: Optional[List[float]] = None
+        self._rl_prev_sample: Optional[List[float]] = None
+
     def should_update(self, epoch: int) -> bool:
         """Whether the planner should update this epoch."""
         return epoch > 0 and epoch % self._config.update_interval_epochs == 0
@@ -61,9 +84,11 @@ class PlannerAgent:
             return self._heuristic_update(stats)
         elif self._config.planner_type == "bandit":
             return self._bandit_update(stats)
+        elif self._config.planner_type == "rl":
+            return self._rl_update(stats)
         else:
-            # RL stub: no-op, keep current schedule
-            logger.info("RL planner stub: keeping current schedule")
+            logger.info("Unknown planner_type %s: keeping current schedule",
+                        self._config.planner_type)
             return self._tax_schedule.brackets
 
     def _compute_welfare(self, stats: Dict[str, float]) -> float:
@@ -123,6 +148,73 @@ class PlannerAgent:
             new_brackets = list(current)
 
         self._tax_schedule.update_brackets(new_brackets)
+        return self._tax_schedule.brackets
+
+    def _rl_update(self, stats: Dict[str, float]) -> List[TaxBracket]:
+        """Online REINFORCE planner.
+
+        Closes bd-i8o. Treats bracket rates as a continuous action
+        sampled per-epoch from a per-bracket Gaussian whose mean is a
+        linear function of (mean_income, gini, n_frozen, 1.0). Rewards
+        the prior epoch's action with the observed welfare and updates
+        the weights via the policy-gradient theorem:
+            ∇log π(a|s) × (R − baseline)
+        where the baseline is an exponential moving average of recent
+        welfare to reduce variance.
+
+        Not a "trained" policy — the weights adapt online during the
+        run. Over enough epochs the planner should converge toward a
+        bracket set that maximizes welfare under the current workforce.
+        """
+        # Compute reward = welfare just realized, with baseline subtraction.
+        welfare = self._compute_welfare(stats)
+        reward = welfare - self._rl_baseline
+        self._rl_baseline = (
+            (1 - self._rl_baseline_alpha) * self._rl_baseline
+            + self._rl_baseline_alpha * welfare
+        )
+
+        # If we have a stored (s, a) from the previous epoch, apply the
+        # policy-gradient update before sampling the next action.
+        if self._rl_prev_features is not None and self._rl_prev_sample is not None:
+            s = self._rl_prev_features
+            a_sample = self._rl_prev_sample
+            # ∇log π(a|s) = (a - μ(s)) / σ² × s   for each bracket dimension
+            for i, sample in enumerate(a_sample):
+                mu_i = sum(self._rl_weights[i][k] * s[k] for k in range(len(s)))
+                grad_factor = (sample - mu_i) / (self._rl_sigma ** 2)
+                for k in range(len(s)):
+                    self._rl_weights[i][k] += (
+                        self._rl_lr * grad_factor * s[k] * reward
+                    )
+
+        # Build feature vector for current state.
+        s_now = [stats.get(f, 0.0) for f in self._rl_features] + [1.0]
+
+        # Sample new rates from per-bracket Gaussians.
+        new_brackets = []
+        new_sample = []
+        for i, b in enumerate(self._tax_schedule.brackets):
+            mu_i = sum(self._rl_weights[i][k] * s_now[k] for k in range(len(s_now)))
+            mu_i = max(0.0, min(1.0, mu_i))
+            sample = self._rng.gauss(mu_i, self._rl_sigma)
+            sample = max(0.0, min(1.0, sample))
+            new_sample.append(sample)
+            new_brackets.append(TaxBracket(threshold=b.threshold, rate=sample))
+
+        # Enforce monotonicity if required by the schedule.
+        if not self._tax_schedule._config.allow_non_monotone:
+            for i in range(1, len(new_brackets)):
+                if new_brackets[i].rate < new_brackets[i - 1].rate:
+                    new_brackets[i] = TaxBracket(
+                        threshold=new_brackets[i].threshold,
+                        rate=new_brackets[i - 1].rate,
+                    )
+                    new_sample[i] = new_sample[i - 1]
+
+        self._tax_schedule.update_brackets(new_brackets)
+        self._rl_prev_features = s_now
+        self._rl_prev_sample = new_sample
         return self._tax_schedule.brackets
 
     @property

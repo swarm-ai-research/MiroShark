@@ -1,0 +1,272 @@
+{
+  "scenario": "/Users/raelisavitt/miroshark-gtb/backend/worlds/gather_trade_build/scenarios/ai_economist_full.yaml",
+  "n_epochs": 30,
+  "steps_per_epoch": 10,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19
+  ],
+  "cells": [
+    {
+      "index": 0,
+      "label": "wood_cost=3_stone_cost=3_income_per_house_per_step=0.25",
+      "overrides": {
+        "build.wood_cost": 3,
+        "build.stone_cost": 3,
+        "build.income_per_house_per_step": 0.25
+      }
+    },
+    {
+      "index": 1,
+      "label": "wood_cost=3_stone_cost=3_income_per_house_per_step=0.5",
+      "overrides": {
+        "build.wood_cost": 3,
+        "build.stone_cost": 3,
+        "build.income_per_house_per_step": 0.5
+      }
+    },
+    {
+      "index": 2,
+      "label": "wood_cost=3_stone_cost=3_income_per_house_per_step=1.0",
+      "overrides": {
+        "build.wood_cost": 3,
+        "build.stone_cost": 3,
+        "build.income_per_house_per_step": 1.0
+      }
+    },
+    {
+      "index": 3,
+      "label": "wood_cost=3_stone_cost=6_income_per_house_per_step=0.25",
+      "overrides": {
+        "build.wood_cost": 3,
+        "build.stone_cost": 6,
+        "build.income_per_house_per_step": 0.25
+      }
+    },
+    {
+      "index": 4,
+      "label": "wood_cost=3_stone_cost=6_income_per_house_per_step=0.5",
+      "overrides": {
+        "build.wood_cost": 3,
+        "build.stone_cost": 6,
+        "build.income_per_house_per_step": 0.5
+      }
+    },
+    {
+      "index": 5,
+      "label": "wood_cost=3_stone_cost=6_income_per_house_per_step=1.0",
+      "overrides": {
+        "build.wood_cost": 3,
+        "build.stone_cost": 6,
+        "build.income_per_house_per_step": 1.0
+      }
+    },
+    {
+      "index": 6,
+      "label": "wood_cost=3_stone_cost=12_income_per_house_per_step=0.25",
+      "overrides": {
+        "build.wood_cost": 3,
+        "build.stone_cost": 12,
+        "build.income_per_house_per_step": 0.25
+      }
+    },
+    {
+      "index": 7,
+      "label": "wood_cost=3_stone_cost=12_income_per_house_per_step=0.5",
+      "overrides": {
+        "build.wood_cost": 3,
+        "build.stone_cost": 12,
+        "build.income_per_house_per_step": 0.5
+      }
+    },
+    {
+      "index": 8,
+      "label": "wood_cost=3_stone_cost=12_income_per_house_per_step=1.0",
+      "overrides": {
+        "build.wood_cost": 3,
+        "build.stone_cost": 12,
+        "build.income_per_house_per_step": 1.0
+      }
+    },
+    {
+      "index": 9,
+      "label": "wood_cost=6_stone_cost=3_income_per_house_per_step=0.25",
+      "overrides": {
+        "build.wood_cost": 6,
+        "build.stone_cost": 3,
+        "build.income_per_house_per_step": 0.25
+      }
+    },
+    {
+      "index": 10,
+      "label": "wood_cost=6_stone_cost=3_income_per_house_per_step=0.5",
+      "overrides": {
+        "build.wood_cost": 6,
+        "build.stone_cost": 3,
+        "build.income_per_house_per_step": 0.5
+      }
+    },
+    {
+      "index": 11,
+      "label": "wood_cost=6_stone_cost=3_income_per_house_per_step=1.0",
+      "overrides": {
+        "build.wood_cost": 6,
+        "build.stone_cost": 3,
+        "build.income_per_house_per_step": 1.0
+      }
+    },
+    {
+      "index": 12,
+      "label": "wood_cost=6_stone_cost=6_income_per_house_per_step=0.25",
+      "overrides": {
+        "build.wood_cost": 6,
+        "build.stone_cost": 6,
+        "build.income_per_house_per_step": 0.25
+      }
+    },
+    {
+      "index": 13,
+      "label": "wood_cost=6_stone_cost=6_income_per_house_per_step=0.5",
+      "overrides": {
+        "build.wood_cost": 6,
+        "build.stone_cost": 6,
+        "build.income_per_house_per_step": 0.5
+      }
+    },
+    {
+      "index": 14,
+      "label": "wood_cost=6_stone_cost=6_income_per_house_per_step=1.0",
+      "overrides": {
+        "build.wood_cost": 6,
+        "build.stone_cost": 6,
+        "build.income_per_house_per_step": 1.0
+      }
+    },
+    {
+      "index": 15,
+      "label": "wood_cost=6_stone_cost=12_income_per_house_per_step=0.25",
+      "overrides": {
+        "build.wood_cost": 6,
+        "build.stone_cost": 12,
+        "build.income_per_house_per_step": 0.25
+      }
+    },
+    {
+      "index": 16,
+      "label": "wood_cost=6_stone_cost=12_income_per_house_per_step=0.5",
+      "overrides": {
+        "build.wood_cost": 6,
+        "build.stone_cost": 12,
+        "build.income_per_house_per_step": 0.5
+      }
+    },
+    {
+      "index": 17,
+      "label": "wood_cost=6_stone_cost=12_income_per_house_per_step=1.0",
+      "overrides": {
+        "build.wood_cost": 6,
+        "build.stone_cost": 12,
+        "build.income_per_house_per_step": 1.0
+      }
+    },
+    {
+      "index": 18,
+      "label": "wood_cost=12_stone_cost=3_income_per_house_per_step=0.25",
+      "overrides": {
+        "build.wood_cost": 12,
+        "build.stone_cost": 3,
+        "build.income_per_house_per_step": 0.25
+      }
+    },
+    {
+      "index": 19,
+      "label": "wood_cost=12_stone_cost=3_income_per_house_per_step=0.5",
+      "overrides": {
+        "build.wood_cost": 12,
+        "build.stone_cost": 3,
+        "build.income_per_house_per_step": 0.5
+      }
+    },
+    {
+      "index": 20,
+      "label": "wood_cost=12_stone_cost=3_income_per_house_per_step=1.0",
+      "overrides": {
+        "build.wood_cost": 12,
+        "build.stone_cost": 3,
+        "build.income_per_house_per_step": 1.0
+      }
+    },
+    {
+      "index": 21,
+      "label": "wood_cost=12_stone_cost=6_income_per_house_per_step=0.25",
+      "overrides": {
+        "build.wood_cost": 12,
+        "build.stone_cost": 6,
+        "build.income_per_house_per_step": 0.25
+      }
+    },
+    {
+      "index": 22,
+      "label": "wood_cost=12_stone_cost=6_income_per_house_per_step=0.5",
+      "overrides": {
+        "build.wood_cost": 12,
+        "build.stone_cost": 6,
+        "build.income_per_house_per_step": 0.5
+      }
+    },
+    {
+      "index": 23,
+      "label": "wood_cost=12_stone_cost=6_income_per_house_per_step=1.0",
+      "overrides": {
+        "build.wood_cost": 12,
+        "build.stone_cost": 6,
+        "build.income_per_house_per_step": 1.0
+      }
+    },
+    {
+      "index": 24,
+      "label": "wood_cost=12_stone_cost=12_income_per_house_per_step=0.25",
+      "overrides": {
+        "build.wood_cost": 12,
+        "build.stone_cost": 12,
+        "build.income_per_house_per_step": 0.25
+      }
+    },
+    {
+      "index": 25,
+      "label": "wood_cost=12_stone_cost=12_income_per_house_per_step=0.5",
+      "overrides": {
+        "build.wood_cost": 12,
+        "build.stone_cost": 12,
+        "build.income_per_house_per_step": 0.5
+      }
+    },
+    {
+      "index": 26,
+      "label": "wood_cost=12_stone_cost=12_income_per_house_per_step=1.0",
+      "overrides": {
+        "build.wood_cost": 12,
+        "build.stone_cost": 12,
+        "build.income_per_house_per_step": 1.0
+      }
+    }
+  ]
+}

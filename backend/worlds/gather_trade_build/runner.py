@@ -61,6 +61,15 @@ def _create_policy(
             coalition_id=agent_spec.get("coalition_id", "default"),
             seed=seed,
         )
+    elif ptype == "maker":
+        from worlds.gather_trade_build.agents import MakerWorkerPolicy
+        return MakerWorkerPolicy(
+            agent_id,
+            seed=seed,
+            sell_markup=agent_spec.get("sell_markup", 0.2),
+            buy_discount=agent_spec.get("buy_discount", 0.2),
+            target_inventory=agent_spec.get("target_inventory", 5.0),
+        )
     else:
         logger.warning("Unknown policy type '%s', defaulting to honest", ptype)
         return HonestWorkerPolicy(agent_id, seed=seed)

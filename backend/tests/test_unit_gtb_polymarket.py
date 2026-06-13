@@ -127,6 +127,80 @@ class TestEnvelopeShape:
         assert env["direction"] == "Bearish"
 
 
+class TestConfidenceSource:
+    """The confidence_source field flags one-sided / no-stake envelopes so
+    downstream consumers don't size positions on what is actually a poll."""
+
+    def test_open_market_no_stakes_is_no_stakes(self, gtb_poly):
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([_M("gtb-0000", "Q")]), sim_id="demo",
+        )
+        assert payload["markets"][0]["confidence_source"] == "no_stakes"
+
+    def test_open_market_one_sided_is_one_sided(self, gtb_poly):
+        stakes = {"gtb-0000": [
+            {"agent_id": "w0", "side": "yes", "amount": 3.0, "epoch": 1, "market_id": "gtb-0000"},
+        ]}
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([_M("gtb-0000", "Q")], stakes_by_market=stakes), sim_id="demo",
+        )
+        assert payload["markets"][0]["confidence_source"] == "one_sided"
+
+    def test_open_market_both_sides_is_two_sided(self, gtb_poly):
+        stakes = {"gtb-0000": [
+            {"agent_id": "w0", "side": "yes", "amount": 3.0, "epoch": 1, "market_id": "gtb-0000"},
+            {"agent_id": "w1", "side": "no",  "amount": 1.0, "epoch": 1, "market_id": "gtb-0000"},
+        ]}
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([_M("gtb-0000", "Q")], stakes_by_market=stakes), sim_id="demo",
+        )
+        assert payload["markets"][0]["confidence_source"] == "two_sided"
+
+    def test_resolved_market_is_resolved(self, gtb_poly):
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([], resolved_markets=[_M("gtb-0001", "Q", status="yes")]),
+            sim_id="demo",
+        )
+        assert payload["markets"][0]["confidence_source"] == "resolved"
+
+
+class TestHeadlinePrefersTwoSided:
+    """The headline picker must prefer two-sided markets over one-sided
+    even when the one-sided has higher confidence_pct."""
+
+    def test_two_sided_with_lower_conf_beats_one_sided(self, gtb_poly):
+        # Market A: one-sided, will have yes_prob ~0.93 (high confidence)
+        # Market B: two-sided, will have yes_prob ~0.66 (lower confidence)
+        stakes = {
+            "gtb-0000": [
+                {"agent_id": "w0", "side": "yes", "amount": 12.0, "epoch": 1, "market_id": "gtb-0000"},
+            ],
+            "gtb-0001": [
+                {"agent_id": "w0", "side": "yes", "amount": 2.0, "epoch": 1, "market_id": "gtb-0001"},
+                {"agent_id": "w1", "side": "no",  "amount": 1.0, "epoch": 1, "market_id": "gtb-0001"},
+            ],
+        }
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state(
+                [_M("gtb-0000", "one-sided"), _M("gtb-0001", "two-sided")],
+                stakes_by_market=stakes,
+            ),
+            sim_id="demo",
+        )
+        assert payload["headline"]["market_id"] == "gtb-0001", (
+            "headline must prefer two-sided market even when one-sided has higher confidence"
+        )
+
+    def test_headline_falls_back_to_one_sided_when_no_two_sided_exists(self, gtb_poly):
+        stakes = {"gtb-0000": [
+            {"agent_id": "w0", "side": "yes", "amount": 5.0, "epoch": 1, "market_id": "gtb-0000"},
+        ]}
+        payload = gtb_poly.compute_gtb_polymarket(
+            _state([_M("gtb-0000", "Q")], stakes_by_market=stakes), sim_id="demo",
+        )
+        assert payload["headline"]["confidence_source"] == "one_sided"
+
+
 class TestHeadline:
     def test_headline_is_highest_confidence_open_market(self, gtb_poly):
         # Two open markets: one with stakes far apart, one with no stakes.

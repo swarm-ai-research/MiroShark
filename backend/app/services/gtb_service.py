@@ -177,6 +177,7 @@ class GTBWorldService:
         self._env = GTBEnvironment(config)
         self._policies = {}
         self._batch_personas: Dict[str, Dict[str, Any]] = {}
+        self._batch_temperatures: Dict[str, float] = {}
         next_id = 0
         for spec in agent_specs:
             for _ in range(spec.get("count", 1)):
@@ -196,6 +197,7 @@ class GTBWorldService:
                     )
                 if spec.get("policy") == "llm_batched":
                     self._batch_personas[agent_id] = spec.get("persona") or {"name": agent_id}
+                    self._batch_temperatures[agent_id] = float(spec.get("temperature", 0.4))
 
         self._planner = PlannerAgent(
             config.planner, self._env.tax_schedule, seed=seed
@@ -209,9 +211,16 @@ class GTBWorldService:
         self._batch_driver = None
         if self._batch_personas:
             from .gtb_llm_agent import BatchLLMDriver
+            temps = set(self._batch_temperatures.values())
+            if len(temps) > 1:
+                raise ValueError(
+                    f"BatchLLMDriver requires a uniform temperature across llm_batched "
+                    f"personas; got {sorted(temps)}"
+                )
             self._batch_driver = BatchLLMDriver(
                 agent_ids=list(self._batch_personas.keys()),
                 personas=dict(self._batch_personas),
+                temperature=next(iter(temps)),
             )
 
     def attach_batch_driver(self, driver) -> None:

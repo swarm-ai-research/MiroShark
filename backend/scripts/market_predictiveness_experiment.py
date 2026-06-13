@@ -6,9 +6,12 @@ for every open market, derived from the live stake book. The bd-xc2 fix
 adds a `confidence_source` field flagging one-sided pools as sentiment,
 not forecasts. This experiment quantifies the predictive accuracy:
 
-  - For every market that resolves YES or NO, record the polymarket
-    envelope at the epoch the market was created (the snapshot the
-    consumer would have seen first).
+  - For every market that resolves YES or NO, record the LATEST open
+    polymarket envelope seen before resolution (the most-informed
+    snapshot a consumer could act on). Capturing at creation instead
+    is structurally pre-stake — a just-created market cannot have
+    stakes yet — so every pair would land in `no_stakes` by
+    construction (PR #3 review catch).
   - Compute the Brier score (yes_prob - resolved)^2 grouped by
     confidence_source.
   - Hypothesis (from PR #1 PR-description analysis):
@@ -85,22 +88,23 @@ def _drive_one_seed(seed: int, n_epochs: int, steps_per_epoch: int) -> List[Tupl
     sim_id = f"mit-{seed}"
     svc = reg.start(sim_id, overrides=overrides)
 
-    # market_id -> envelope at creation epoch (None until first /polymarket call)
-    snapshot_at_creation: Dict[str, Dict] = {}
+    # market_id -> LATEST open envelope (overwritten each tick). When
+    # the market resolves we use the last open snapshot — the
+    # most-informed yes_probability a consumer could have acted on
+    # before settlement. Capturing at creation misses the whole
+    # stake-accumulation arc: a market's first envelope predates any
+    # chance to stake on it, so it is `no_stakes` by construction.
+    latest_open_snapshot: Dict[str, Dict] = {}
     pending_markets = set()
 
     total_ticks = n_epochs * steps_per_epoch
     for tick in range(total_ticks):
-        # Capture envelope snapshot ONCE per market_id, the first time
-        # we see it after creation. The envelope at-creation is what a
-        # downstream consumer would size positions against.
         payload = gtb_polymarket.compute_gtb_polymarket(svc.state(), sim_id)
         if payload:
             for env in payload["markets"]:
-                mid = env["market_id"]
-                if env["status"] == "open" and mid not in snapshot_at_creation:
-                    snapshot_at_creation[mid] = dict(env)
-                    pending_markets.add(mid)
+                if env["status"] == "open":
+                    latest_open_snapshot[env["market_id"]] = dict(env)
+                    pending_markets.add(env["market_id"])
         svc.step()
 
     # Walk resolved markets to find outcomes.
@@ -108,10 +112,16 @@ def _drive_one_seed(seed: int, n_epochs: int, steps_per_epoch: int) -> List[Tupl
     pairs: List[Tuple[Dict, str]] = []
     for m in state["markets"]["resolved"]:
         mid = m["market_id"]
-        snap = snapshot_at_creation.get(mid)
+        snap = latest_open_snapshot.get(mid)
         if snap is None or m["status"] not in ("yes", "no"):
             continue
         pairs.append((snap, m["status"]))
+    # Diagnostic: count stake_placed events directly from the stake
+    # history so "nobody staked" is observed, not inferred from the
+    # envelope snapshots.
+    stake_events = [h for h in state.get("stakes", {}).get("history", [])
+                    if h.get("event") == "placed"]
+    logger.info("  seed %d placed %d stakes", seed, len(stake_events))
     reg.stop(sim_id)
     return pairs
 

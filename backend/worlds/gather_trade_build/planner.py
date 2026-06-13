@@ -59,7 +59,14 @@ class PlannerAgent:
         self._rl_sigma: float = 0.05
         self._rl_baseline: float = 0.0
         self._rl_baseline_alpha: float = 0.1
-        self._rl_lr: float = 0.02
+        # Honor the configured learning rate so the planner-reactivity
+        # sweep's `planner.learning_rate` overrides take effect.
+        self._rl_lr: float = self._config.learning_rate
+        # Per-weight update magnitude cap. With sigma²=0.0025 and raw
+        # feature/reward scales on the order of tens, an uncapped step
+        # routinely pushes a weight by hundreds, collapsing the next
+        # mu_i clip to 0 or 1 and stalling learning.
+        self._rl_update_clip: float = 0.05
         self._rl_prev_features: Optional[List[float]] = None
         self._rl_prev_sample: Optional[List[float]] = None
 
@@ -184,9 +191,12 @@ class PlannerAgent:
                 mu_i = sum(self._rl_weights[i][k] * s[k] for k in range(len(s)))
                 grad_factor = (sample - mu_i) / (self._rl_sigma ** 2)
                 for k in range(len(s)):
-                    self._rl_weights[i][k] += (
-                        self._rl_lr * grad_factor * s[k] * reward
-                    )
+                    delta = self._rl_lr * grad_factor * s[k] * reward
+                    if delta > self._rl_update_clip:
+                        delta = self._rl_update_clip
+                    elif delta < -self._rl_update_clip:
+                        delta = -self._rl_update_clip
+                    self._rl_weights[i][k] += delta
 
         # Build feature vector for current state.
         s_now = [stats.get(f, 0.0) for f in self._rl_features] + [1.0]

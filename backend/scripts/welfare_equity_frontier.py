@@ -292,6 +292,7 @@ def main(argv=None) -> None:
             "gini_mean": float(r["gini_coefficient_mean"]),
             "on_pareto_front": on,
         })
+    args.output.mkdir(parents=True, exist_ok=True)
     with open(args.output / "pareto.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(out_rows[0].keys()))
         w.writeheader()

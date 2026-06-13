@@ -1,0 +1,3 @@
+provider,rounds_attempted,rounds_succeeded,rounds_parsed,latency_mean_s,latency_median_s,latency_p10_s,latency_p90_s,tokens_in_mean,tokens_out_mean
+gemini-2.5-flash,5,5,5,8.812150526046754,9.018702983856201,6.12768292427063,12.113263845443726,678,79
+gemini-2.5-flash-lite,5,5,5,0.5938146114349365,0.5919628143310547,0.45571208000183105,0.7175250053405762,678,94

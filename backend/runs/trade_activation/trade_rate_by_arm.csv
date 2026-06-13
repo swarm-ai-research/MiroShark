@@ -1,0 +1,4 @@
+arm,n_seeds,order_rate_mean,executed_rate_mean,executed_rate_p10,executed_rate_p90,final_welfare_mean,final_tax_mean
+baseline,20,0.0,0.0,0.0,0.0,31.01214754030225,151.07311671335478
+hetero_skill,20,0.0,0.0,0.0,0.0,32.663766803068086,31.32785565390577
+bot_makers,20,0.13382978978848553,0.0,0.0,0.0,26.857527426632405,150.50743725373255

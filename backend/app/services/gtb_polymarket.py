@@ -15,6 +15,25 @@ estimate converges to ``yes_pool / (yes_pool + no_pool)``.
 Resolved markets emit ``yes_probability`` of 1.0 / 0.0 (matching the
 resolution) so a consumer doing post-hoc PnL has the same field
 populated as for open markets.
+
+CAVEAT — one-sided liquidity is the default. The first live LLM smoke
+on PR #1 surfaced that populations of persona-aligned LLM agents pile
+stakes on one side (8/8 YES). When only one side has any stakes, the
+yes_probability is NOT a forecast — it is a sentiment poll of the
+swarm. A 95%-bullish swarm can be 95% bullish on a market that resolves
+NO. Every envelope therefore exposes a ``confidence_source`` field:
+
+    confidence_source = "two_sided"   # both yes_pool and no_pool > 0
+                      | "one_sided"   # only one side has stakes
+                      | "no_stakes"   # neither side has stakes
+                      | "resolved"    # market already settled
+
+External consumers (Polymarket bots, MCP tools, downstream
+calibration code) SHOULD treat ``one_sided`` and ``no_stakes``
+envelopes as un-priced sentiment, not as forecasts. Do not size
+positions against them. The ``headline`` picker already prefers
+``two_sided`` markets when available; consumers should filter
+similarly.
 """
 
 from __future__ import annotations
@@ -57,6 +76,23 @@ def _risk_tier(confidence_pct: float) -> str:
     if confidence_pct >= 25.0:
         return "medium-risk"
     return "high-risk"
+
+
+def _confidence_source(yes_pool: float, no_pool: float, is_resolved: bool) -> str:
+    """Classify how trustworthy the yes_probability is as a forecast.
+
+    - ``resolved``: market already settled; yes_prob is 1.0 or 0.0.
+    - ``two_sided``: both sides have stakes — actual price discovery.
+    - ``one_sided``: only one side staked — sentiment, not a forecast.
+    - ``no_stakes``: neither side; yes_prob is the Laplace prior (0.5).
+    """
+    if is_resolved:
+        return "resolved"
+    if yes_pool > 0 and no_pool > 0:
+        return "two_sided"
+    if yes_pool > 0 or no_pool > 0:
+        return "one_sided"
+    return "no_stakes"
 
 
 def _market_to_envelope(
@@ -104,6 +140,10 @@ def _market_to_envelope(
         "confidence_pct": confidence_pct,
         "confidence_tier": _confidence_tier(confidence_pct),
         "risk_tier": _risk_tier(confidence_pct),
+        # See module docstring: only `two_sided` envelopes are forecasts.
+        # `one_sided` and `no_stakes` are population sentiment polls
+        # that downstream consumers should NOT size positions on.
+        "confidence_source": _confidence_source(yes_pool, no_pool, is_resolved),
         "polymarket_generated_at": generated_at,
     }
 
@@ -170,15 +210,22 @@ def compute_gtb_polymarket(
 def _pick_headline(envelopes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Pick the most-actionable open envelope for single-signal consumers.
 
-    Ranking: highest |confidence_pct| (clearest belief) among open
-    markets with at least some stake; falls back to the highest-
-    confidence open market overall; returns ``None`` if every market
-    is resolved.
+    Ranking (each tier strictly preferred over the next):
+      1. ``two_sided`` markets — real price discovery with counterparty
+      2. ``one_sided`` markets — sentiment poll, flagged as such
+      3. ``no_stakes`` markets — Laplace prior, last resort
+
+    Within each tier, sort by ``confidence_pct`` descending. Returns
+    ``None`` only when every market is resolved.
     """
     open_envs = [e for e in envelopes if e["status"] == "open"]
     if not open_envs:
         return None
-    staked = [e for e in open_envs if e["yes_pool"] + e["no_pool"] > 0]
-    pool = staked or open_envs
-    pool.sort(key=lambda e: e["confidence_pct"], reverse=True)
-    return pool[0]
+    two_sided = [e for e in open_envs if e["confidence_source"] == "two_sided"]
+    one_sided = [e for e in open_envs if e["confidence_source"] == "one_sided"]
+    no_stakes = [e for e in open_envs if e["confidence_source"] == "no_stakes"]
+    for pool in (two_sided, one_sided, no_stakes):
+        if pool:
+            pool.sort(key=lambda e: e["confidence_pct"], reverse=True)
+            return pool[0]
+    return None

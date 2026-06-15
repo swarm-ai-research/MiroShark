@@ -94,10 +94,12 @@ def _decide_stakes(strategy: str, envelopes: List[dict], bankroll: float,
             continue
         yes_prob = float(env["yes_probability"])
         if strategy == "kelly":
-            # Don't skip `no_stakes` markets — the envelope's yes_prob is the
-            # LLM/baseline prior, which is exactly the signal Kelly sizes
-            # against. Skipping them meant kelly never traded on the
-            # all-honest population fixture (every run had accepted=0).
+            # Don't gate on confidence_source — let _kelly_size be the sole
+            # arbiter via its |yes_prob - 0.5| edge threshold. On a pure
+            # `no_stakes` prior (yes_prob == 0.5) Kelly correctly abstains
+            # (no edge, no bet); it only sizes once stakes move the headline
+            # past the threshold. The earlier source-based skip was
+            # redundant with this and just obscured the real gate.
             size = _kelly_size(yes_prob, bankroll)
             if size <= 0:
                 continue

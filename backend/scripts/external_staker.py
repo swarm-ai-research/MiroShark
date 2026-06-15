@@ -94,8 +94,12 @@ def _decide_stakes(strategy: str, envelopes: List[dict], bankroll: float,
             continue
         yes_prob = float(env["yes_probability"])
         if strategy == "kelly":
-            if env["confidence_source"] not in ("two_sided", "one_sided"):
-                continue
+            # Don't gate on confidence_source — let _kelly_size be the sole
+            # arbiter via its |yes_prob - 0.5| edge threshold. On a pure
+            # `no_stakes` prior (yes_prob == 0.5) Kelly correctly abstains
+            # (no edge, no bet); it only sizes once stakes move the headline
+            # past the threshold. The earlier source-based skip was
+            # redundant with this and just obscured the real gate.
             size = _kelly_size(yes_prob, bankroll)
             if size <= 0:
                 continue
@@ -107,8 +111,12 @@ def _decide_stakes(strategy: str, envelopes: List[dict], bankroll: float,
             yes_pool = float(env.get("yes_pool", 0.0))
             no_pool = float(env.get("no_pool", 0.0))
             if yes_pool == 0 and no_pool == 0:
-                continue
-            side = "no" if yes_pool > no_pool else "yes"
+                # No pool signal yet — fall back to taking the opposite of
+                # the envelope's prior so contrarian still opens positions
+                # on no-stake markets instead of waiting forever.
+                side = "no" if yes_prob >= 0.5 else "yes"
+            else:
+                side = "no" if yes_pool > no_pool else "yes"
             out.append({"market_id": env["market_id"], "side": side, "amount": amount})
     return out
 

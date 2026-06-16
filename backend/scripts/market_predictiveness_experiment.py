@@ -70,16 +70,24 @@ logger = logging.getLogger("market_predictiveness")
 _DEFAULT_OUTPUT = _BACKEND / "runs/market_predictiveness"
 
 
-def _drive_one_seed(seed: int, n_epochs: int, steps_per_epoch: int) -> List[Tuple[Dict, str]]:
+def _drive_one_seed(seed: int, n_epochs: int, steps_per_epoch: int,
+                    temperature: float = 0.4) -> List[Tuple[Dict, str]]:
     """Run one world from start to past every market's deadline.
 
     Returns a list of (envelope_at_creation, resolved_status) tuples.
     Resolved status is 'yes' / 'no' / 'expired'. Open markets at
     end-of-run are skipped.
     """
+    # Stamp the requested temperature onto every llm_batched persona.
+    agents = []
+    for spec in gtb_llm_personas.STAKING_LINEUP:
+        if spec.get("policy") == "llm_batched":
+            agents.append({**spec, "temperature": temperature})
+        else:
+            agents.append(spec)
     overrides = {
         "simulation": {"steps_per_epoch": steps_per_epoch, "seed": seed},
-        "agents": gtb_llm_personas.STAKING_LINEUP,
+        "agents": agents,
     }
     reg = gtb_service.GTBWorldRegistry()
     sim_id = f"mit-{seed}"
@@ -152,6 +160,7 @@ def main(argv=None) -> None:
     parser.add_argument("--n-seeds", type=int, default=15)
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--steps", type=int, default=3)
+    parser.add_argument("--temperature", type=float, default=0.4)
     parser.add_argument("--output", type=Path, default=_DEFAULT_OUTPUT)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -159,8 +168,8 @@ def main(argv=None) -> None:
 
     all_pairs: List[Tuple[Dict, str]] = []
     for seed in range(args.n_seeds):
-        logger.info("seed %d/%d...", seed + 1, args.n_seeds)
-        pairs = _drive_one_seed(seed, args.epochs, args.steps)
+        logger.info("seed %d/%d (temp=%.2f)...", seed + 1, args.n_seeds, args.temperature)
+        pairs = _drive_one_seed(seed, args.epochs, args.steps, temperature=args.temperature)
         logger.info("  -> %d resolved pairs", len(pairs))
         all_pairs.extend(pairs)
 

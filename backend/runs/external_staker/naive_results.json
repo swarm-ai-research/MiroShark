@@ -1,0 +1,56 @@
+{
+  "strategy": "naive",
+  "n_seeds": 5,
+  "summary": [
+    {
+      "seed": 0,
+      "accepted": 218,
+      "rejected": 114,
+      "wins": 0,
+      "losses": 0,
+      "refunds": 99,
+      "gross_payout": 0,
+      "final_coin": 0.26458347441591384
+    },
+    {
+      "seed": 1,
+      "accepted": 234,
+      "rejected": 122,
+      "wins": 4,
+      "losses": 0,
+      "refunds": 88,
+      "gross_payout": 4.0,
+      "final_coin": 9.73606209943819
+    },
+    {
+      "seed": 2,
+      "accepted": 277,
+      "rejected": 11,
+      "wins": 22,
+      "losses": 0,
+      "refunds": 70,
+      "gross_payout": 22.0,
+      "final_coin": 13.343888752982235
+    },
+    {
+      "seed": 3,
+      "accepted": 243,
+      "rejected": 65,
+      "wins": 16,
+      "losses": 0,
+      "refunds": 88,
+      "gross_payout": 16.0,
+      "final_coin": 19.252201963006
+    },
+    {
+      "seed": 4,
+      "accepted": 279,
+      "rejected": 17,
+      "wins": 22,
+      "losses": 0,
+      "refunds": 70,
+      "gross_payout": 22.0,
+      "final_coin": 27.697484858198493
+    }
+  ]
+}

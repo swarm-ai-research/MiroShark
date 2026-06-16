@@ -46,7 +46,7 @@ uv run python -m worlds.gather_trade_build.run_scenario \
 
 These are findings that should be treated as background knowledge when proposing new experiments:
 
-- **Welfare is monotonically decreasing in `audit_probability`** across the full 0→0.95 range (`runs/audit_sweep/FINDINGS.md`). Sweeps proposing "audit more" are starting from a false premise; the welfare cost is 10.5% peak-to-trough.
+- **Welfare declines steeply in `audit_probability` up to ~0.2, then plateaus below the no-audit baseline** (`runs/audit_sweep/FINDINGS.md`). Every cell at `audit_probability ≥ 0.05` sits below baseline; the welfare cost is 10.5% peak-to-trough. Sweeps proposing "audit more" are starting from a false premise. (Not strictly monotone — the 0.20→0.30 uptick is within seed noise; PR #2 review caught this.)
 - **Tax revenue is Laffer-shaped**, peaking near `audit_probability=0.025`, not at the naive 50% EV-breakeven.
 - **Catches don't collapse with high enforcement** — `EvasiveWorkerPolicy` keeps trying periodically regardless of audit rate.
 - **Audits saturate at the worker count** (~14) by `audit_probability ≈ 0.2`.

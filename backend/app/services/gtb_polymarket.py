@@ -19,17 +19,39 @@ populated as for open markets.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .polymarket_service import _confidence_tier
 
+_SCHEMA_PATH = Path(__file__).parent / "schema" / "gtb_polymarket.schema.json"
 
-_SCHEMA_VERSION = "1"
+
+_SCHEMA_VERSION = "1.1"
 # Laplace smoothing: add this much to each side's pool so the prior is
 # always 50/50 and a market with two opposing 1.0-coin stakes is still
 # read as a near-coin-flip rather than overconfidently 50%.
 _LAPLACE = 1.0
+
+# Discriminates how yes_probability was derived. Lets a downstream consumer
+# trust resolved/two_sided readings and discount the others rather than
+# treating every envelope as a real forecast.
+_CONFIDENCE_SOURCES = ("resolved", "no_stakes", "one_sided", "two_sided")
+
+
+def _confidence_source(
+    is_resolved: bool, yes_pool: float, no_pool: float
+) -> str:
+    if is_resolved:
+        return "resolved"
+    if yes_pool <= 0 and no_pool <= 0:
+        return "no_stakes"
+    if yes_pool <= 0 or no_pool <= 0:
+        return "one_sided"
+    return "two_sided"
 
 
 def _iso_now() -> str:
@@ -103,6 +125,7 @@ def _market_to_envelope(
         "direction": direction,
         "confidence_pct": confidence_pct,
         "confidence_tier": _confidence_tier(confidence_pct),
+        "confidence_source": _confidence_source(is_resolved, yes_pool, no_pool),
         "risk_tier": _risk_tier(confidence_pct),
         "polymarket_generated_at": generated_at,
     }
@@ -165,6 +188,25 @@ def compute_gtb_polymarket(
         "headline": headline,
         "markets": envelopes,
     }
+
+
+@lru_cache(maxsize=1)
+def _load_schema() -> Dict[str, Any]:
+    return json.loads(_SCHEMA_PATH.read_text())
+
+
+def validate_payload(payload: Dict[str, Any]) -> None:
+    """Validate a payload against gtb_polymarket.schema.json.
+
+    Raises ``jsonschema.ValidationError`` on mismatch. Intended for tests
+    and assertions on the producer side; we don't call it from hot paths
+    so a schema bump doesn't risk blocking a live run on a producer bug.
+    """
+    # Import lazily so the module loads in environments that don't install
+    # jsonschema (e.g. minimal containers that never emit envelopes).
+    from jsonschema import validate
+
+    validate(instance=payload, schema=_load_schema())
 
 
 def _pick_headline(envelopes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

@@ -19,6 +19,10 @@ dependencies = [
     # GTB world scenarios are YAML; gtb_service imports yaml at module load.
     "PyYAML>=6.0",
 
+    # gtb_polymarket.validate_payload validates emitted envelopes against
+    # schema/gtb_polymarket.schema.json. Imported lazily.
+    "jsonschema>=4.0",
+
     # LLM related
     "openai>=1.0.0",
 

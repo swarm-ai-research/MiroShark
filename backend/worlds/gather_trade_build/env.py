@@ -92,6 +92,8 @@ class GTBEnvironment:
         # Market
         self._buy_orders: List[MarketOrder] = []
         self._sell_orders: List[MarketOrder] = []
+        self._last_trade_price: Dict[str, float] = {}
+        self._volume_this_epoch: Dict[str, float] = {}
 
         # Events
         self._events: List[GTBEvent] = []
@@ -102,6 +104,7 @@ class GTBEnvironment:
 
         # Collusion tracking
         self._action_traces: Dict[str, List[str]] = {}  # agent_id -> recent actions
+        self._ask_history: Dict[str, List[float]] = {}  # agent_id -> ask prices this epoch
 
         # Misreport fractions per agent for current epoch (applied to future income)
         self._misreport_fractions: Dict[str, float] = {}
@@ -112,6 +115,21 @@ class GTBEnvironment:
 
         # Frozen agents (from audit penalties)
         self._frozen_agents: Dict[str, int] = {}  # agent_id -> unfreeze_epoch
+
+        # Treasury: taxes/fines/debt payments accumulate here and fund
+        # redistribution (taxation.redistribution) and treasury-mode house
+        # income (build.house_income_mode). With both off it just grows,
+        # mirroring the legacy "burned" semantics.
+        self._treasury = 0.0
+
+        # Coin ledger: every mint/burn itemized by source so conservation
+        # can be verified (sum of worker coin == minted - burned).
+        self._coin_minted: Dict[str, float] = {}
+        self._coin_burned: Dict[str, float] = {}
+        # Gross coin actually received per worker this epoch (house income,
+        # sale proceeds). Compared against gross_income_this_epoch at epoch
+        # close to surface the income-vs-coin gap.
+        self._coin_earned_this_epoch: Dict[str, float] = {}
 
         self._init_grid()
 
@@ -159,6 +177,7 @@ class GTBEnvironment:
             skill_build=skill_build,
         )
         worker.add_resource(ResourceType.COIN, 10.0)  # starting endowment
+        self._ledger_mint("endowment", 10.0)
         self._workers[agent_id] = worker
         self._grid[row][col].occupants.append(agent_id)
         self._action_traces[agent_id] = []
@@ -193,6 +212,7 @@ class GTBEnvironment:
             "position": worker.position,
             "inventory": dict(worker.inventory),
             "energy": worker.energy,
+            "effort_this_epoch": worker.effort_this_epoch,
             "houses_built": worker.houses_built,
             "gross_income": worker.gross_income_this_epoch,
             "deferred_income": worker.deferred_income,
@@ -201,7 +221,26 @@ class GTBEnvironment:
             "tax_schedule": self._tax_schedule.to_dict(),
             "visible_cells": visible,
             "frozen": agent_id in self._frozen_agents,
+            "market_info": self._market_info(),
         }
+
+    def _market_info(self) -> Dict[str, Any]:
+        """Per-resource price discovery info: last trade price, best
+        bid/ask on the resting book, and volume this epoch."""
+        info: Dict[str, Any] = {}
+        for rtype in (ResourceType.WOOD, ResourceType.STONE):
+            key = rtype.value
+            bids = [o.price_per_unit for o in self._buy_orders
+                    if o.resource_type == rtype and o.quantity > 1e-12]
+            asks = [o.price_per_unit for o in self._sell_orders
+                    if o.resource_type == rtype and o.quantity > 1e-12]
+            info[key] = {
+                "last_price": self._last_trade_price.get(key),
+                "best_bid": max(bids) if bids else None,
+                "best_ask": min(asks) if asks else None,
+                "volume_this_epoch": self._volume_this_epoch.get(key, 0.0),
+            }
+        return info
 
     # ------------------------------------------------------------------
     # Step execution
@@ -282,6 +321,13 @@ class GTBEnvironment:
     # Action handlers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _spend_energy(worker: WorkerState, cost: float) -> None:
+        """Deduct energy and book it as labor effort (for labor disutility)."""
+        worker.energy -= cost
+        worker.effort_this_epoch += cost
+        worker.cumulative_effort += cost
+
     def _handle_move(self, worker: WorkerState, direction: Direction) -> GTBEvent:
         delta = _DIR_DELTA.get(direction)
         if delta is None or worker.energy < self._config.energy_cost_move:
@@ -299,7 +345,7 @@ class GTBEnvironment:
         ]
         self._grid[new_r][new_c].occupants.append(worker.agent_id)
         worker.position = (new_r, new_c)
-        worker.energy -= self._config.energy_cost_move
+        self._spend_energy(worker, self._config.energy_cost_move)
 
         return GTBEvent(
             event_type="move", step=self._current_step,
@@ -326,13 +372,19 @@ class GTBEnvironment:
         gathered = min(cell.resource.amount, 1.0 * worker.skill_gather)
         cell.resource.amount -= gathered
         worker.add_resource(cell.resource.resource_type, gathered)
-        worker.energy -= self._config.energy_cost_gather
+        self._spend_energy(worker, self._config.energy_cost_gather)
 
-        # Gathering generates income
-        income = gathered  # 1:1 income for gathering
-        worker.gross_income_this_epoch += income
-        worker.reported_income_this_epoch += income
-        worker.cumulative_income += income
+        if self._config.ledger_mode == "legacy":
+            # Legacy: gathering books taxable income 1:1 with no coin
+            # behind it (the income/coin gap in epoch_ledger events).
+            income = gathered
+            worker.gross_income_this_epoch += income
+            worker.reported_income_this_epoch += income
+            worker.cumulative_income += income
+        else:
+            # coin mode: gathering yields resources only; income arises
+            # when they are sold or when houses pay out.
+            income = 0.0
 
         return GTBEvent(
             event_type="gather", step=self._current_step,
@@ -356,6 +408,13 @@ class GTBEnvironment:
                 event_type="build_fail", step=self._current_step,
                 epoch=self._current_epoch, agent_id=worker.agent_id,
                 details={"reason": "max_houses"},
+            )
+        r0, c0 = worker.position
+        if self._grid[r0][c0].house is not None:
+            return GTBEvent(
+                event_type="build_fail", step=self._current_step,
+                epoch=self._current_epoch, agent_id=worker.agent_id,
+                details={"reason": "cell_occupied"},
             )
         wood_ok = worker.remove_resource(ResourceType.WOOD, cfg.wood_cost)
         if not wood_ok:
@@ -386,7 +445,7 @@ class GTBEnvironment:
         self._houses.append(house)
         self._grid[r][c].house = house
         worker.houses_built += 1
-        worker.energy -= self._config.energy_cost_build
+        self._spend_energy(worker, self._config.energy_cost_build)
 
         return GTBEvent(
             event_type="build", step=self._current_step,
@@ -411,16 +470,32 @@ class GTBEnvironment:
             )
         price = max(self._config.market.price_floor,
                      min(action.price, self._config.market.price_ceiling))
+        qty = max(0.0, action.quantity)
+        ttl = self._config.market.order_ttl_steps
         order = MarketOrder(
             agent_id=worker.agent_id,
             resource_type=action.resource_type,
-            quantity=max(0, action.quantity),
+            quantity=qty,
             price_per_unit=price,
             is_buy=True,
             step=self._current_step,
+            expiry_step=self._current_step + ttl,
         )
+        if ttl > 0:
+            # Persistent book: escrow the full worst-case cost at post
+            # time so a resting bid can always settle (no spoofing).
+            escrow = qty * price * (1.0 + self._config.market.transaction_fee_rate)
+            if qty <= 0 or worker.get_resource(ResourceType.COIN) < escrow:
+                return GTBEvent(
+                    event_type="trade_fail", step=self._current_step,
+                    epoch=self._current_epoch, agent_id=worker.agent_id,
+                    details={"reason": "insufficient_coin_escrow",
+                              "required": escrow},
+                )
+            worker.remove_resource(ResourceType.COIN, escrow)
+            order.escrowed_coin = escrow
         self._buy_orders.append(order)
-        worker.energy -= self._config.energy_cost_trade
+        self._spend_energy(worker, self._config.energy_cost_trade)
         return GTBEvent(
             event_type="order_placed", step=self._current_step,
             epoch=self._current_epoch, agent_id=worker.agent_id,
@@ -445,16 +520,30 @@ class GTBEnvironment:
             )
         price = max(self._config.market.price_floor,
                      min(action.price, self._config.market.price_ceiling))
+        qty = max(0.0, action.quantity)
+        ttl = self._config.market.order_ttl_steps
         order = MarketOrder(
             agent_id=worker.agent_id,
             resource_type=action.resource_type,
-            quantity=max(0, action.quantity),
+            quantity=qty,
             price_per_unit=price,
             is_buy=False,
             step=self._current_step,
+            expiry_step=self._current_step + ttl,
         )
+        if ttl > 0:
+            # Persistent book: escrow the resource at post time.
+            if qty <= 0 or worker.get_resource(action.resource_type) < qty:
+                return GTBEvent(
+                    event_type="trade_fail", step=self._current_step,
+                    epoch=self._current_epoch, agent_id=worker.agent_id,
+                    details={"reason": "insufficient_resource_escrow",
+                              "required": qty},
+                )
+            worker.remove_resource(action.resource_type, qty)
         self._sell_orders.append(order)
-        worker.energy -= self._config.energy_cost_trade
+        self._ask_history.setdefault(worker.agent_id, []).append(price)
+        self._spend_energy(worker, self._config.energy_cost_trade)
         return GTBEvent(
             event_type="order_placed", step=self._current_step,
             epoch=self._current_epoch, agent_id=worker.agent_id,
@@ -504,6 +593,18 @@ class GTBEnvironment:
             )
         frac = min(action.underreport_fraction, cfg.max_underreport_fraction)
         frac = max(0.0, frac)
+        if cfg.semantics == "stance":
+            # The fraction is a per-epoch stance; reported income is
+            # derived once at epoch close as gross * (1 - fraction),
+            # so the hidden share cannot depend on action ordering.
+            self._misreport_fractions[worker.agent_id] = frac
+            return GTBEvent(
+                event_type="misreport", step=self._current_step,
+                epoch=self._current_epoch, agent_id=worker.agent_id,
+                details={"underreport_fraction": frac, "semantics": "stance"},
+            )
+
+        # Legacy event semantics: rewrite reported income at this instant
         hidden = worker.gross_income_this_epoch * frac
         worker.reported_income_this_epoch = worker.gross_income_this_epoch - hidden
         # Track fraction so future income (house income) also applies it
@@ -521,17 +622,45 @@ class GTBEnvironment:
 
     def _distribute_house_income(self) -> List[GTBEvent]:
         events = []
+        if not self._houses:
+            return events
+
+        # treasury mode: payouts come out of collected taxes/fines instead
+        # of being minted; pro-rate when the treasury can't cover demand.
+        treasury_mode = self._config.build.house_income_mode == "treasury"
+        scale = 1.0
+        if treasury_mode:
+            demand = sum(
+                h.income_per_step for h in self._houses
+                if h.owner_id in self._workers
+            )
+            scale = min(1.0, self._treasury / demand) if demand > 0 else 0.0
+            if scale <= 0:
+                return events
+
         for house in self._houses:
             worker = self._workers.get(house.owner_id)
             if worker is None:
                 continue
-            income = house.income_per_step
+            income = house.income_per_step * scale
             worker.add_resource(ResourceType.COIN, income)
+            if treasury_mode:
+                self._treasury -= income
+                self._ledger_mint("house_income_treasury", income)
+            else:
+                self._ledger_mint("house_income", income)
+            self._coin_earned_this_epoch[house.owner_id] = (
+                self._coin_earned_this_epoch.get(house.owner_id, 0.0) + income
+            )
             worker.gross_income_this_epoch += income
-            # Only add to reported income the non-hidden fraction.
-            # If the worker has misreported, the underreport fraction applies
-            # to all income including house income (prevents partial undo).
-            misreport_frac = self._misreport_fractions.get(worker.agent_id, 0.0)
+            # Legacy event semantics: the underreport fraction applies to
+            # all income including house income (prevents partial undo).
+            # In stance mode reported income is derived at epoch close,
+            # so it accrues at full value here.
+            if self._config.misreporting.semantics == "stance":
+                misreport_frac = 0.0
+            else:
+                misreport_frac = self._misreport_fractions.get(worker.agent_id, 0.0)
             reported_portion = income * (1.0 - misreport_frac)
             worker.reported_income_this_epoch += reported_portion
             worker.cumulative_income += income
@@ -590,23 +719,55 @@ class GTBEnvironment:
                     bi += 1
                     continue
 
-                # Check buyer has coin and seller has resource
-                if buyer.get_resource(ResourceType.COIN) < total + fee:
-                    bi += 1
-                    continue
-                if seller.get_resource(rtype) < qty:
-                    si += 1
-                    continue
-
-                buyer.remove_resource(ResourceType.COIN, total + fee)
-                seller.add_resource(ResourceType.COIN, total - fee)
-                seller.remove_resource(rtype, qty)
+                persistent = self._config.market.order_ttl_steps > 0
+                if persistent:
+                    # Coin and resource were escrowed at post time; the
+                    # midpoint price <= bid, so escrow always covers it.
+                    buy.escrowed_coin -= total + fee
+                    seller.add_resource(ResourceType.COIN, total - fee)
+                else:
+                    # Legacy same-tick book: check balances at match time
+                    if buyer.get_resource(ResourceType.COIN) < total + fee:
+                        bi += 1
+                        continue
+                    if seller.get_resource(rtype) < qty:
+                        si += 1
+                        continue
+                    buyer.remove_resource(ResourceType.COIN, total + fee)
+                    seller.add_resource(ResourceType.COIN, total - fee)
+                    seller.remove_resource(rtype, qty)
+                # Buyer pays total+fee, seller receives total-fee: both
+                # fee halves leave circulation.
+                self._ledger_burn("trade_fees", 2.0 * fee)
+                self._coin_earned_this_epoch[sell.agent_id] = (
+                    self._coin_earned_this_epoch.get(sell.agent_id, 0.0)
+                    + (total - fee)
+                )
                 buyer.add_resource(rtype, qty)
+
+                # Price discovery info exposed in observations
+                self._last_trade_price[rtype.value] = price
+                self._volume_this_epoch[rtype.value] = (
+                    self._volume_this_epoch.get(rtype.value, 0.0) + qty
+                )
 
                 # Trade income for seller
                 seller.gross_income_this_epoch += total - fee
                 seller.reported_income_this_epoch += total - fee
                 seller.cumulative_income += total - fee
+
+                if self._config.ledger_mode == "coin":
+                    # Purchases are an expense: income is net coin flow.
+                    # (compute_tax floors at 0 if an epoch nets negative.)
+                    buyer.gross_income_this_epoch -= total + fee
+                    buyer.reported_income_this_epoch -= total + fee
+                    buyer.cumulative_income -= total + fee
+                    # Mirror in the gap tracker so income == net coin
+                    # flow closes the epoch_ledger gap to zero.
+                    self._coin_earned_this_epoch[buy.agent_id] = (
+                        self._coin_earned_this_epoch.get(buy.agent_id, 0.0)
+                        - (total + fee)
+                    )
 
                 buy.quantity -= qty
                 sell.quantity -= qty
@@ -625,9 +786,62 @@ class GTBEnvironment:
                     },
                 ))
 
-        # Clear order books
-        self._buy_orders.clear()
-        self._sell_orders.clear()
+        if self._config.market.order_ttl_steps > 0:
+            # Persistent book: drop filled orders, expire stale ones
+            # (refunding escrow), keep the rest resting.
+            events.extend(self._expire_orders())
+        else:
+            # Legacy: order books are wiped every step
+            self._buy_orders.clear()
+            self._sell_orders.clear()
+        return events
+
+    def _expire_orders(self, force_all: bool = False) -> List[GTBEvent]:
+        """Remove filled/expired orders, refunding escrow to their owners.
+
+        With force_all=True every resting order is cancelled (epoch close).
+        """
+        events: List[GTBEvent] = []
+
+        def _expired(o: MarketOrder) -> bool:
+            return force_all or o.quantity <= 1e-12 or self._current_step >= o.expiry_step
+
+        kept_buys: List[MarketOrder] = []
+        for o in self._buy_orders:
+            if not _expired(o):
+                kept_buys.append(o)
+                continue
+            refund = max(0.0, o.escrowed_coin)
+            if refund > 0:
+                worker = self._workers.get(o.agent_id)
+                if worker is not None:
+                    worker.add_resource(ResourceType.COIN, refund)
+            if o.quantity > 1e-12:
+                events.append(GTBEvent(
+                    event_type="order_expired", step=self._current_step,
+                    epoch=self._current_epoch, agent_id=o.agent_id,
+                    details={"side": "buy", "resource": o.resource_type.value,
+                              "unfilled_qty": o.quantity,
+                              "escrow_refund": refund},
+                ))
+        self._buy_orders = kept_buys
+
+        kept_sells: List[MarketOrder] = []
+        for o in self._sell_orders:
+            if not _expired(o):
+                kept_sells.append(o)
+                continue
+            if o.quantity > 1e-12:
+                worker = self._workers.get(o.agent_id)
+                if worker is not None:
+                    worker.add_resource(o.resource_type, o.quantity)
+                events.append(GTBEvent(
+                    event_type="order_expired", step=self._current_step,
+                    epoch=self._current_epoch, agent_id=o.agent_id,
+                    details={"side": "sell", "resource": o.resource_type.value,
+                              "unfilled_qty": o.quantity},
+                ))
+        self._sell_orders = kept_sells
         return events
 
     # ------------------------------------------------------------------
@@ -655,13 +869,45 @@ class GTBEnvironment:
         """
         events: List[GTBEvent] = []
 
+        # 0. Persistent book: cancel all resting orders and refund escrow
+        # BEFORE taxes, so locked coin is available for the tax bill.
+        if self._config.market.order_ttl_steps > 0:
+            events.extend(self._expire_orders(force_all=True))
+
+        # 0b. Stance-mode misreporting: derive reported income uniformly
+        # from the declared fraction, before taxes are computed on it.
+        if self._config.misreporting.semantics == "stance":
+            for agent_id, frac in self._misreport_fractions.items():
+                worker = self._workers.get(agent_id)
+                if worker is not None and frac > 0:
+                    worker.reported_income_this_epoch = (
+                        worker.gross_income_this_epoch * (1.0 - frac)
+                    )
+
         # 1. Collect taxes (only what can actually be paid)
+        debt_enabled = self._config.taxation.debt_enabled
         for agent_id, worker in self._workers.items():
-            tax = self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
             coin_balance = worker.get_resource(ResourceType.COIN)
+
+            # Outstanding debt from prior epochs is collected first.
+            debt_collected = 0.0
+            if debt_enabled and worker.tax_debt > 0:
+                debt_collected = min(worker.tax_debt, coin_balance)
+                worker.remove_resource(ResourceType.COIN, debt_collected)
+                self._ledger_burn("debt_payments", debt_collected)
+                self._treasury += debt_collected
+                worker.tax_debt -= debt_collected
+                coin_balance -= debt_collected
+
+            tax = self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
             actual_tax = min(tax, coin_balance)
             worker.remove_resource(ResourceType.COIN, actual_tax)
+            self._ledger_burn("taxes", actual_tax)
+            self._treasury += actual_tax
             worker.tax_paid_this_epoch = actual_tax
+            shortfall = tax - actual_tax
+            if debt_enabled and shortfall > 0:
+                worker.tax_debt += shortfall
             events.append(GTBEvent(
                 event_type="tax", epoch=self._current_epoch,
                 agent_id=agent_id,
@@ -670,7 +916,9 @@ class GTBEnvironment:
                     "reported_income": worker.reported_income_this_epoch,
                     "tax_owed": tax,
                     "tax_paid": actual_tax,
-                    "shortfall": tax - actual_tax,
+                    "shortfall": shortfall,
+                    "debt_collected": debt_collected,
+                    "debt_outstanding": worker.tax_debt,
                     "effective_rate": actual_tax / max(worker.reported_income_this_epoch, 1e-9),
                 },
             ))
@@ -678,6 +926,21 @@ class GTBEnvironment:
         # 2. Audits
         audit_events = self._run_audits()
         events.extend(audit_events)
+
+        # 2b. Redistribute the treasury lump-sum (AI Economist semantics:
+        # collected revenue returns equally to all workers). Transfers are
+        # not taxable income.
+        if (self._config.taxation.redistribution == "lump_sum"
+                and self._treasury > 0 and self._workers):
+            share = self._treasury / len(self._workers)
+            for agent_id, worker in self._workers.items():
+                worker.add_resource(ResourceType.COIN, share)
+                events.append(GTBEvent(
+                    event_type="redistribution", epoch=self._current_epoch,
+                    agent_id=agent_id, details={"amount": share},
+                ))
+            self._ledger_mint("redistribution", self._treasury)
+            self._treasury = 0.0
 
         # 3. Unfreeze agents whose freeze expired
         to_unfreeze = [
@@ -690,6 +953,38 @@ class GTBEnvironment:
                 event_type="unfreeze", epoch=self._current_epoch,
                 agent_id=aid,
             ))
+
+        # Ledger coherence report. Two distinct checks:
+        #   - coin conservation (hard invariant): worker coin == minted - burned
+        #   - income/coin gap (known issue, tracked for the Phase 1 ledger
+        #     rework): gathering and deferred-income carry-ins book gross
+        #     income with no corresponding coin inflow, so this gap is
+        #     expected to be positive until income == net coin flow.
+        income_coin_gap = sum(
+            w.gross_income_this_epoch
+            - self._coin_earned_this_epoch.get(aid, 0.0)
+            for aid, w in self._workers.items()
+        )
+        ledger = self.coin_ledger()
+        events.append(GTBEvent(
+            event_type="epoch_ledger", epoch=self._current_epoch,
+            details={
+                "income_coin_gap": income_coin_gap,
+                "coin_conserved": abs(ledger["discrepancy"]) <= 1e-6,
+                "discrepancy": ledger["discrepancy"],
+                "minted": ledger["minted"],
+                "burned": ledger["burned"],
+                "treasury": self._treasury,
+                "total_tax_debt": sum(
+                    w.tax_debt for w in self._workers.values()
+                ),
+            },
+        ))
+        if abs(ledger["discrepancy"]) > 1e-6:
+            logger.warning(
+                "GTB coin conservation violated at epoch %d: %s",
+                self._current_epoch, ledger,
+            )
 
         # Snapshot worker state AFTER taxes/audits but BEFORE reset.
         # This gives metrics the accurate post-tax, pre-reset view.
@@ -707,6 +1002,9 @@ class GTBEnvironment:
 
         # Clear per-epoch misreport fractions
         self._misreport_fractions.clear()
+        self._coin_earned_this_epoch.clear()
+        self._volume_this_epoch.clear()
+        self._ask_history.clear()
 
         self._current_epoch += 1
         self._current_step = 0
@@ -718,11 +1016,112 @@ class GTBEnvironment:
 
         return EpochResult(events=events, snapshot=snapshot)
 
+    def _apply_audit_catch(self, agent_id: str, worker: WorkerState,
+                            discrepancy: float) -> List[GTBEvent]:
+        """Settle a successful audit: fine, debt, freeze. Shared by both
+        selection modes."""
+        cfg = self._config.misreporting
+        events: List[GTBEvent] = []
+        evaded_tax = self._tax_schedule.compute_tax(
+            worker.gross_income_this_epoch
+        ) - self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
+        fine_owed = evaded_tax * cfg.fine_multiplier
+        coin_balance = worker.get_resource(ResourceType.COIN)
+        fine_paid = min(fine_owed, coin_balance)
+        worker.remove_resource(ResourceType.COIN, fine_paid)
+        self._ledger_burn("fines", fine_paid)
+        self._treasury += fine_paid
+        if self._config.taxation.debt_enabled and fine_owed > fine_paid:
+            worker.tax_debt += fine_owed - fine_paid
+        worker.times_caught += 1
+        worker.total_fines += fine_paid
+
+        events.append(GTBEvent(
+            event_type="audit_caught", epoch=self._current_epoch,
+            agent_id=agent_id,
+            details={
+                "discrepancy": discrepancy,
+                "evaded_tax": evaded_tax,
+                "fine_owed": fine_owed,
+                "fine": fine_paid,
+                "shortfall": fine_owed - fine_paid,
+                "times_caught": worker.times_caught,
+            },
+        ))
+
+        if cfg.freeze_on_repeat and worker.times_caught >= cfg.freeze_after_n_catches:
+            self._frozen_agents[agent_id] = (
+                self._current_epoch + cfg.freeze_duration_epochs
+            )
+            events.append(GTBEvent(
+                event_type="freeze", epoch=self._current_epoch,
+                agent_id=agent_id,
+                details={"until_epoch": self._current_epoch + cfg.freeze_duration_epochs},
+            ))
+        return events
+
+    def _run_audits_observable(self) -> List[GTBEvent]:
+        """Observable-information audit pipeline (selection_mode=observable).
+
+        The tax authority risk-scores only what it can see: reported
+        income vs coin verifiably received this epoch (house payouts and
+        market sale proceeds — both on public records). Income from
+        unobserved activity (gathering, in legacy ledger mode) generates
+        no suspicion, so evasion on it is genuinely hard to catch.
+        Anyone can be selected; audits of honest workers surface as
+        audit_false_positive, and audits of misreporters succeed only
+        with probability detection_power (audit_miss otherwise).
+        """
+        cfg = self._config.misreporting
+        events: List[GTBEvent] = []
+        for agent_id, worker in self._workers.items():
+            observable = self._coin_earned_this_epoch.get(agent_id, 0.0)
+            reported = worker.reported_income_this_epoch
+            if observable > 1e-9:
+                suspicion = max(0.0, (observable - reported) / observable)
+            else:
+                suspicion = 0.0
+            audit_prob = cfg.audit_probability * (
+                1.0 + cfg.risk_based_audit_multiplier * suspicion
+            )
+            collusion_boost = self._collusion_audit_boost.get(agent_id, 0.0)
+            if collusion_boost > 0:
+                audit_prob += collusion_boost * cfg.audit_probability
+            audit_prob = min(1.0, audit_prob)
+
+            if self._rng.random() >= audit_prob:
+                continue
+            worker.times_audited += 1
+
+            discrepancy = (
+                worker.gross_income_this_epoch - worker.reported_income_this_epoch
+            )
+            if discrepancy < 1e-9:
+                events.append(GTBEvent(
+                    event_type="audit_false_positive",
+                    epoch=self._current_epoch, agent_id=agent_id,
+                    details={"suspicion": suspicion,
+                              "collusion_boost": collusion_boost},
+                ))
+                continue
+            if self._rng.random() >= cfg.detection_power:
+                events.append(GTBEvent(
+                    event_type="audit_miss", epoch=self._current_epoch,
+                    agent_id=agent_id,
+                    details={"discrepancy": discrepancy,
+                              "detection_power": cfg.detection_power},
+                ))
+                continue
+            events.extend(self._apply_audit_catch(agent_id, worker, discrepancy))
+        return events
+
     def _run_audits(self) -> List[GTBEvent]:
         """Run audit pipeline for the current epoch."""
         cfg = self._config.misreporting
         if not cfg.enabled:
             return []
+        if cfg.selection_mode == "observable":
+            return self._run_audits_observable()
 
         events: List[GTBEvent] = []
         for agent_id, worker in self._workers.items():
@@ -753,39 +1152,7 @@ class GTBEnvironment:
             worker.times_audited += 1
 
             # Selected for audit: discrepancy is observed -> always caught.
-            evaded_tax = self._tax_schedule.compute_tax(
-                worker.gross_income_this_epoch
-            ) - self._tax_schedule.compute_tax(worker.reported_income_this_epoch)
-            fine_owed = evaded_tax * cfg.fine_multiplier
-            coin_balance = worker.get_resource(ResourceType.COIN)
-            fine_paid = min(fine_owed, coin_balance)
-            worker.remove_resource(ResourceType.COIN, fine_paid)
-            worker.times_caught += 1
-            worker.total_fines += fine_paid
-
-            events.append(GTBEvent(
-                event_type="audit_caught", epoch=self._current_epoch,
-                agent_id=agent_id,
-                details={
-                    "discrepancy": discrepancy,
-                    "evaded_tax": evaded_tax,
-                    "fine_owed": fine_owed,
-                    "fine": fine_paid,
-                    "shortfall": fine_owed - fine_paid,
-                    "times_caught": worker.times_caught,
-                },
-            ))
-
-            # Freeze on repeat offenders
-            if cfg.freeze_on_repeat and worker.times_caught >= cfg.freeze_after_n_catches:
-                self._frozen_agents[agent_id] = (
-                    self._current_epoch + cfg.freeze_duration_epochs
-                )
-                events.append(GTBEvent(
-                    event_type="freeze", epoch=self._current_epoch,
-                    agent_id=agent_id,
-                    details={"until_epoch": self._current_epoch + cfg.freeze_duration_epochs},
-                ))
+            events.extend(self._apply_audit_catch(agent_id, worker, discrepancy))
 
         # False-positive pass: audit honest agents flagged by collusion boost.
         # These agents have no actual discrepancy, so they can never be "caught",
@@ -813,10 +1180,84 @@ class GTBEnvironment:
     # Collusion detection
     # ------------------------------------------------------------------
 
+    def _apply_collusion_response(self, aid_a: str, aid_b: str) -> List[str]:
+        """Apply configured responses (audit boost, trade restriction) to a
+        flagged pair. Returns the list of responses applied."""
+        cfg = self._config.collusion
+        responses_applied: List[str] = []
+        for aid in (aid_a, aid_b):
+            current_extra = self._collusion_audit_boost.get(aid, 0.0)
+            boost = cfg.response_audit_multiplier - 1.0
+            self._collusion_audit_boost[aid] = min(current_extra + boost, 5.0)
+            responses_applied.append("audit_boost")
+        if cfg.response_trade_restriction_epochs > 0:
+            restrict_until = (
+                self._current_epoch + cfg.response_trade_restriction_epochs
+            )
+            for aid in (aid_a, aid_b):
+                self._trade_restricted[aid] = max(
+                    self._trade_restricted.get(aid, 0), restrict_until,
+                )
+            responses_applied.append("trade_restriction")
+        return responses_applied
+
+    def _detect_price_fixing(self) -> List[GTBEvent]:
+        """Market-based collusion detector: flags pairs that each posted
+        several sell orders this epoch at near-identical prices — the
+        signature of a price-fixing cartel. Works from public market
+        records only, so it can be wrong in both directions: independent
+        traders can quote alike (false positive), cartels quoting with
+        jitter slip through (false negative). Detector quality is
+        measured downstream as precision/recall against true coalition
+        labels.
+        """
+        cfg = self._config.collusion
+        events: List[GTBEvent] = []
+        candidates = {
+            aid: prices for aid, prices in self._ask_history.items()
+            if len(prices) >= cfg.price_fixing_min_asks
+        }
+        aids = sorted(candidates)
+        for i in range(len(aids)):
+            for j in range(i + 1, len(aids)):
+                aid_a, aid_b = aids[i], aids[j]
+                mean_a = sum(candidates[aid_a]) / len(candidates[aid_a])
+                mean_b = sum(candidates[aid_b]) / len(candidates[aid_b])
+                denom = max(mean_a, mean_b, 1e-9)
+                rel_gap = abs(mean_a - mean_b) / denom
+                if rel_gap > cfg.price_fixing_price_tolerance:
+                    continue
+                worker_a = self._workers.get(aid_a)
+                worker_b = self._workers.get(aid_b)
+                if worker_a is None or worker_b is None:
+                    continue
+                same_coalition = (
+                    worker_a.coalition_id is not None
+                    and worker_a.coalition_id == worker_b.coalition_id
+                )
+                responses = self._apply_collusion_response(aid_a, aid_b)
+                events.append(GTBEvent(
+                    event_type="collusion_detected",
+                    epoch=self._current_epoch,
+                    details={
+                        "agents": [aid_a, aid_b],
+                        "method": "price_fixing",
+                        "mean_ask_a": mean_a,
+                        "mean_ask_b": mean_b,
+                        "relative_gap": rel_gap,
+                        "suspicion_score": 1.0 - rel_gap,
+                        "same_coalition": same_coalition,
+                        "responses": responses,
+                    },
+                ))
+        return events
+
     def detect_collusion(self) -> List[GTBEvent]:
         """Detect potential collusion among workers.
 
-        Uses action-trace similarity over a rolling window.
+        Two detectors:
+          - action-trace similarity over a rolling window (legacy)
+          - price-fixing signature on posted asks (collusion.detect_price_fixing)
 
         Returns:
             List of collusion detection events.
@@ -826,6 +1267,8 @@ class GTBEnvironment:
             return []
 
         events: List[GTBEvent] = []
+        if cfg.detect_price_fixing:
+            events.extend(self._detect_price_fixing())
         agent_ids = list(self._action_traces.keys())
 
         for i in range(len(agent_ids)):
@@ -862,36 +1305,15 @@ class GTBEnvironment:
                         suspicion = min(1.0, suspicion * 1.3)
 
                     if suspicion >= cfg.suspicion_score_threshold:
-                        # Apply response actions
-                        responses_applied = []
-
-                        # Increase audit probability for flagged agents
-                        for aid in (aid_a, aid_b):
-                            current_extra = self._collusion_audit_boost.get(aid, 0.0)
-                            boost = cfg.response_audit_multiplier - 1.0
-                            self._collusion_audit_boost[aid] = min(
-                                current_extra + boost, 5.0,
-                            )
-                            responses_applied.append("audit_boost")
-
-                        # Temporary trade restriction
-                        if cfg.response_trade_restriction_epochs > 0:
-                            restrict_until = (
-                                self._current_epoch
-                                + cfg.response_trade_restriction_epochs
-                            )
-                            for aid in (aid_a, aid_b):
-                                self._trade_restricted[aid] = max(
-                                    self._trade_restricted.get(aid, 0),
-                                    restrict_until,
-                                )
-                            responses_applied.append("trade_restriction")
-
+                        responses_applied = self._apply_collusion_response(
+                            aid_a, aid_b,
+                        )
                         events.append(GTBEvent(
                             event_type="collusion_detected",
                             epoch=self._current_epoch,
                             details={
                                 "agents": [aid_a, aid_b],
+                                "method": "action_trace",
                                 "similarity": similarity,
                                 "suspicion_score": suspicion,
                                 "same_coalition": same_coalition,
@@ -900,6 +1322,53 @@ class GTBEnvironment:
                         ))
 
         return events
+
+    # ------------------------------------------------------------------
+    # Coin ledger
+    # ------------------------------------------------------------------
+
+    def _ledger_mint(self, source: str, amount: float) -> None:
+        self._coin_minted[source] = self._coin_minted.get(source, 0.0) + amount
+
+    def _ledger_burn(self, sink: str, amount: float) -> None:
+        self._coin_burned[sink] = self._coin_burned.get(sink, 0.0) + amount
+
+    def register_external_coin(self, delta: float, source: str) -> None:
+        """Record a coin change made outside the env (e.g. prediction-market
+        stake escrow/payouts in the world service) so conservation checks
+        stay balanced. Positive delta = coin added to a worker, negative =
+        coin removed."""
+        if delta >= 0:
+            self._ledger_mint(source, delta)
+        else:
+            self._ledger_burn(source, -delta)
+
+    def coin_ledger(self) -> Dict[str, Any]:
+        """Itemized mint/burn totals and the conservation discrepancy.
+
+        discrepancy == 0 (within float tolerance) means every coin held by
+        workers is accounted for by an itemized mint minus an itemized burn.
+        """
+        total_coin = sum(
+            w.get_resource(ResourceType.COIN) for w in self._workers.values()
+        )
+        # Coin locked in resting buy orders is still worker-owned
+        escrowed = sum(max(0.0, o.escrowed_coin) for o in self._buy_orders)
+        total_coin += escrowed
+        minted = sum(self._coin_minted.values())
+        burned = sum(self._coin_burned.values())
+        return {
+            "total_worker_coin": total_coin,
+            "escrowed_coin": escrowed,
+            "minted": dict(self._coin_minted),
+            "burned": dict(self._coin_burned),
+            "minted_total": minted,
+            "burned_total": burned,
+            "discrepancy": total_coin - (minted - burned),
+        }
+
+    def verify_coin_conservation(self, tolerance: float = 1e-6) -> bool:
+        return abs(self.coin_ledger()["discrepancy"]) <= tolerance
 
     # ------------------------------------------------------------------
     # Accessors
@@ -920,6 +1389,10 @@ class GTBEnvironment:
             ws.inventory = dict(w.inventory)
             snapshot[aid] = ws
         return snapshot
+
+    @property
+    def treasury(self) -> float:
+        return self._treasury
 
     @property
     def tax_schedule(self) -> TaxSchedule:
@@ -950,37 +1423,70 @@ class GTBEnvironment:
         return self._config
 
     def get_aggregate_stats(self) -> Dict[str, float]:
-        """Compute aggregate stats for planner observation."""
-        incomes = [w.gross_income_this_epoch for w in self._workers.values()]
-        coins = [w.get_resource(ResourceType.COIN) for w in self._workers.values()]
-        n = len(incomes) or 1
+        """Compute aggregate stats for planner observation (live workers).
+
+        NOTE: after end_epoch() the per-epoch counters are zeroed; use
+        stats_from_snapshot() with the EpochResult snapshot to give the
+        planner the epoch that actually just closed.
+        """
+        return self._aggregate_stats(self._workers)
+
+    def stats_from_snapshot(
+        self, snapshot: Dict[str, WorkerState],
+    ) -> Dict[str, float]:
+        """Aggregate stats over a pre-reset epoch snapshot (see end_epoch)."""
+        return self._aggregate_stats(snapshot)
+
+    def _aggregate_stats(
+        self, workers: Dict[str, WorkerState],
+    ) -> Dict[str, float]:
+        from worlds.gather_trade_build.metrics import compute_gini
+        from worlds.gather_trade_build.reward import compute_isoelastic_utility
+
+        ws = list(workers.values())
+        incomes = [w.gross_income_this_epoch for w in ws]
+        coins = [w.get_resource(ResourceType.COIN) for w in ws]
+        n = len(ws) or 1
 
         total_income = sum(incomes)
         mean_income = total_income / n
-        total_tax = sum(w.tax_paid_this_epoch for w in self._workers.values())
-        total_houses = sum(w.houses_built for w in self._workers.values())
+        total_tax = sum(w.tax_paid_this_epoch for w in ws)
+        total_houses = sum(w.houses_built for w in ws)
 
-        # Gini coefficient
-        sorted_inc = sorted(incomes)
-        if total_income > 0:
-            cumulative = 0.0
-            gini_sum = 0.0
-            for _i, inc in enumerate(sorted_inc):
-                cumulative += inc
-                gini_sum += cumulative
-            gini = 1.0 - 2.0 * gini_sum / (n * total_income) + 1.0 / n
-        else:
-            gini = 0.0
+        # Wealth = coin + house replacement value (build cost as proxy)
+        house_value = self._config.build.wood_cost + self._config.build.stone_cost
+        wealths = [
+            w.get_resource(ResourceType.COIN) + house_value * w.houses_built
+            for w in ws
+        ]
+
+        # Isoelastic utility (Phase 2 preferences)
+        mean_utility = (
+            sum(compute_isoelastic_utility(w, self._config.utility) for w in ws) / n
+        )
+
+        # Top-bracket stats for the Saez planner
+        thresholds = self._tax_schedule.bracket_thresholds
+        top_threshold = thresholds[-1] if thresholds else 0.0
+        top_incomes = [inc for inc in incomes if inc >= top_threshold]
+        top_mean_income = (
+            sum(top_incomes) / len(top_incomes) if top_incomes else 0.0
+        )
 
         return {
             "total_income": total_income,
             "mean_income": mean_income,
-            "gini": max(0.0, min(1.0, gini)),
+            "gini": compute_gini(incomes),
+            "gini_wealth": compute_gini(wealths),
+            "mean_utility": mean_utility,
             "total_tax_revenue": total_tax,
             "total_houses": total_houses,
             "mean_coin": sum(coins) / n,
             "n_workers": n,
             "n_frozen": len(self._frozen_agents),
+            "top_threshold": top_threshold,
+            "top_mean_income": top_mean_income,
+            "n_top": float(len(top_incomes)),
         }
 
     def compute_incomes(self) -> Dict[str, float]:

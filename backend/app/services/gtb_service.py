@@ -16,13 +16,15 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from worlds.gather_trade_build.agents import (
+    CartelWorkerPolicy,
     CollusiveWorkerPolicy,
     EvasiveWorkerPolicy,
     GamingWorkerPolicy,
     HonestWorkerPolicy,
+    RationalWorkerPolicy,
+    ZITraderPolicy,
 )
 from worlds.gather_trade_build.config import GTBConfig
-from worlds.gather_trade_build.entities import ResourceType
 from worlds.gather_trade_build.env import GTBAction, GTBEnvironment
 from worlds.gather_trade_build.metrics import GTBMetrics, compute_gtb_metrics
 from worlds.gather_trade_build.planner import PlannerAgent
@@ -58,49 +60,35 @@ def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, An
 
 
 def _stats_from_snapshot(snapshot, env) -> Dict[str, float]:
-    """Mirror env.get_aggregate_stats() against a pre-reset worker snapshot.
+    """Aggregate planner stats from a pre-reset worker snapshot.
 
     end_epoch() returns a snapshot taken BEFORE per-epoch counters are
     cleared. Reading from there gives the planner the closed-epoch
-    income / tax / Gini it actually wants to react to.
+    income / tax / Gini it actually wants to react to. Delegates to the
+    kernel so the service and the headless runner stay in lockstep.
     """
-    workers = list(snapshot.values())
-    n = len(workers) or 1
-    incomes = [w.gross_income_this_epoch for w in workers]
-    coins = [w.inventory.get("coin", 0.0) for w in workers]
-    total_income = sum(incomes)
-    mean_income = total_income / n
-    total_tax = sum(w.tax_paid_this_epoch for w in workers)
-    total_houses = sum(w.houses_built for w in workers)
-
-    sorted_inc = sorted(incomes)
-    if total_income > 0:
-        cumulative = 0.0
-        gini_sum = 0.0
-        for inc in sorted_inc:
-            cumulative += inc
-            gini_sum += cumulative
-        gini = 1.0 - 2.0 * gini_sum / (n * total_income) + 1.0 / n
-        gini = max(0.0, min(1.0, gini))
-    else:
-        gini = 0.0
-
-    return {
-        "total_income": total_income,
-        "mean_income": mean_income,
-        "gini": gini,
-        "total_tax_revenue": total_tax,
-        "total_houses": total_houses,
-        "mean_coin": sum(coins) / n,
-        "n_workers": n,
-        "n_frozen": len(getattr(env, "_frozen_agents", [])),
-    }
+    return env.stats_from_snapshot(snapshot)
 
 
 def _make_policy(spec: Dict[str, Any], agent_id: str, seed: int):
     kind = spec.get("policy", "honest")
     if kind == "honest":
         return HonestWorkerPolicy(agent_id=agent_id, seed=seed)
+    if kind == "rational":
+        return RationalWorkerPolicy(
+            agent_id=agent_id,
+            seed=seed,
+            eta=spec.get("eta", 0.35),
+            labor_coeff=spec.get("labor_coeff", 0.15),
+        )
+    if kind == "trader":
+        return ZITraderPolicy(
+            agent_id=agent_id,
+            seed=seed,
+            value_estimate=spec.get("value_estimate", 2.0),
+            value_jitter=spec.get("value_jitter", 0.5),
+            order_qty=spec.get("order_qty", 1.0),
+        )
     if kind == "gaming":
         return GamingWorkerPolicy(
             agent_id=agent_id,
@@ -112,6 +100,14 @@ def _make_policy(spec: Dict[str, Any], agent_id: str, seed: int):
             agent_id=agent_id,
             seed=seed,
             underreport_fraction=spec.get("underreport_fraction", 0.3),
+        )
+    if kind == "cartel":
+        return CartelWorkerPolicy(
+            agent_id=agent_id,
+            seed=seed,
+            coalition_id=spec.get("coalition_id", "default"),
+            cartel_price=spec.get("cartel_price", 4.0),
+            order_qty=spec.get("order_qty", 1.0),
         )
     if kind == "collusive":
         return CollusiveWorkerPolicy(
@@ -165,7 +161,7 @@ class GTBWorldService:
                 self._policies[agent_id] = _make_policy(
                     spec, agent_id, seed + next_id
                 )
-                if spec.get("policy") == "collusive":
+                if spec.get("policy") in ("collusive", "cartel"):
                     self._env.workers[agent_id].coalition_id = spec.get(
                         "coalition_id", "default"
                     )
@@ -176,6 +172,14 @@ class GTBWorldService:
             config.planner, self._env.tax_schedule, seed=seed
         )
         self._epoch_metrics: List[GTBMetrics] = []
+        # Step events buffered for epoch metrics (trades, misreports,
+        # shifts happen mid-epoch; metrics must see them, as the
+        # headless runner does)
+        self._step_event_buffer: List[Any] = []
+        # Per-worker summary of the previous epoch, injected into
+        # observations so agents (LLM especially) can reason about how
+        # their tax strategy actually played out
+        self._last_epoch_worker_summary: Dict[str, Dict[str, Any]] = {}
         self._action_overrides: Dict[str, GTBAction] = {}
         self._step_in_epoch = 0
         from .gtb_markets import GTBMarketBook, GTBStakeBook
@@ -237,6 +241,7 @@ class GTBWorldService:
                         "market_id": market_id, "side": side,
                         "amount": amount, "coin": coin}
             worker.inventory["coin"] = max(0.0, coin - float(amount))
+            self._env.register_external_coin(-float(amount), "stake_escrow")
             return {"ok": True, "stake": stake.to_dict(),
                     "remaining_coin": worker.inventory["coin"]}
 
@@ -283,6 +288,7 @@ class GTBWorldService:
                 continue
             # Escrow: debit the worker's coin now; payouts on resolve.
             worker.inventory["coin"] = max(0.0, coin - amount)
+            self._env.register_external_coin(-amount, "stake_escrow")
             out.append(GTBEvent(
                 event_type="stake_placed",
                 epoch=self._env.current_epoch,
@@ -296,6 +302,7 @@ class GTBWorldService:
         """Env obs + open markets, so LLM agents can reason about how
         their actions push the metric stream toward open YES/NO questions."""
         obs = self._env.obs(agent_id)
+        obs["last_epoch"] = self._last_epoch_worker_summary.get(agent_id)
         obs["open_markets"] = [
             {
                 "market_id": m.market_id,
@@ -333,6 +340,7 @@ class GTBWorldService:
             events = self._env.apply_actions(actions)
             stake_events = self._process_stakes_locked(actions)
             events.extend(stake_events)
+            self._step_event_buffer.extend(events)
             self._action_overrides.clear()
             self._step_in_epoch += 1
             should_close = self._step_in_epoch >= self._steps_per_epoch
@@ -349,7 +357,11 @@ class GTBWorldService:
             }
 
     def _close_epoch_locked(self) -> Dict[str, Any]:
-        epoch_events = list(self._env.detect_collusion())
+        # Include this epoch's step events (trades, misreports, shifts)
+        # so metrics see the whole epoch, matching the headless runner.
+        epoch_events = list(self._step_event_buffer)
+        self._step_event_buffer = []
+        epoch_events.extend(self._env.detect_collusion())
         result = self._env.end_epoch()
         epoch_events.extend(result.events)
         for policy in self._policies.values():
@@ -362,8 +374,27 @@ class GTBWorldService:
             bracket_thresholds=self._env.tax_schedule.bracket_thresholds,
             prod_weight=self._config.planner.prod_weight,
             ineq_weight=self._config.planner.ineq_weight,
+            utility_config=self._config.utility,
+            house_value=(
+                self._config.build.wood_cost + self._config.build.stone_cost
+            ),
         )
         self._epoch_metrics.append(metrics)
+        self._last_epoch_worker_summary = {
+            aid: {
+                "gross_income": w.gross_income_this_epoch,
+                "reported_income": w.reported_income_this_epoch,
+                "tax_paid": w.tax_paid_this_epoch,
+                "effective_tax_rate": (
+                    w.tax_paid_this_epoch
+                    / max(w.reported_income_this_epoch, 1e-9)
+                ),
+                "effort": w.effort_this_epoch,
+                "times_audited_total": w.times_audited,
+                "times_caught_total": w.times_caught,
+            }
+            for aid, w in result.snapshot.items()
+        }
         metrics_dict = self._metrics_to_dict(metrics)
         # Resolve open markets and lazily seed new ones so there's
         # always something to bet on.
@@ -376,6 +407,7 @@ class GTBWorldService:
                 w = self._env.workers.get(agent_id)
                 if w is not None:
                     w.inventory["coin"] = w.inventory.get("coin", 0.0) + gross
+                    self._env.register_external_coin(gross, "stake_payouts")
         if not self._market_book.open_markets:
             self._market_book.generate(metrics.epoch, metrics_dict)
         # IMPORTANT: end_epoch() above has already reset each worker's
@@ -497,7 +529,10 @@ class GTBWorldService:
             "epoch": m.epoch,
             "total_production": m.total_production,
             "gini_coefficient": m.gini_coefficient,
+            "gini_wealth": m.gini_wealth,
             "welfare": m.welfare,
+            "welfare_eq_prod": m.welfare_eq_prod,
+            "welfare_utilitarian": m.welfare_utilitarian,
             "total_tax_revenue": m.total_tax_revenue,
             "total_audits": m.total_audits,
             "total_catches": m.total_catches,

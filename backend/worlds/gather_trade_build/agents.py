@@ -117,6 +117,52 @@ class HonestWorkerPolicy(GTBWorkerPolicy):
         return best_dir
 
 
+class RationalWorkerPolicy(HonestWorkerPolicy):
+    """Labor-responsive worker: works only while one more unit of work is
+    worth it under isoelastic preferences.
+
+    Each step it compares the post-tax marginal utility of one unit of
+    income against the labor disutility of earning it:
+
+        (1 - marginal_rate) * unit_income * coin^(-eta)  >=  labor_coeff
+
+    and takes leisure (NOOP) otherwise. This supplies the central AI
+    Economist mechanism the other scripted baselines lack: higher
+    marginal tax rates reduce labor supply (substitution effect) and
+    higher accumulated wealth does too (income effect via CRRA).
+    """
+
+    def __init__(self, agent_id: str, eta: float = 0.35,
+                 labor_coeff: float = 0.15,
+                 seed: Optional[int] = None) -> None:
+        super().__init__(agent_id, seed)
+        self._eta = eta
+        self._labor_coeff = labor_coeff
+
+    def decide(self, obs: dict) -> GTBAction:
+        if not self._work_is_worth_it(obs):
+            return GTBAction(agent_id=self.agent_id,
+                             action_type=GTBActionType.NOOP)
+        return super().decide(obs)
+
+    def _work_is_worth_it(self, obs: dict) -> bool:
+        from worlds.gather_trade_build.reward import crra_marginal
+
+        coin = obs.get("inventory", {}).get(ResourceType.COIN.value, 0.0)
+        gross = obs.get("gross_income", 0.0)
+        brackets = obs.get("tax_schedule", {}).get("brackets", [])
+        marginal_rate = 0.0
+        for b in brackets:
+            if gross >= b.get("threshold", 0.0):
+                marginal_rate = b.get("rate", 0.0)
+
+        unit_income = 1.0  # one gather's worth of income
+        net_marginal_utility = (
+            (1.0 - marginal_rate) * unit_income * crra_marginal(coin, self._eta)
+        )
+        return net_marginal_utility >= self._labor_coeff
+
+
 class GamingWorkerPolicy(GTBWorkerPolicy):
     """Strategic worker that uses income shifting to reduce tax burden.
 
@@ -236,6 +282,147 @@ class EvasiveWorkerPolicy(GTBWorkerPolicy):
                 action_type=GTBActionType.MOVE,
                 direction=self._random_direction(),
             )
+        return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+
+
+class ZITraderPolicy(GTBWorkerPolicy):
+    """Zero-intelligence-constrained trader (Gode & Sunder 1993).
+
+    Posts random-priced limit orders constrained to be individually
+    rational around a private resource valuation: bids are drawn at or
+    below the private value, asks at or above it. Heterogeneous private
+    values across a trader population make bids cross asks, providing
+    organic two-sided market flow and price discovery toward the value
+    band — Gode & Sunder showed ZI-C populations reach near-efficient
+    prices without any strategic intelligence.
+
+    When short of inventory the trader gathers like an honest worker so
+    it always has something to sell.
+    """
+
+    def __init__(self, agent_id: str, value_estimate: float = 2.0,
+                 value_jitter: float = 0.5, order_qty: float = 1.0,
+                 min_coin_reserve: float = 2.0,
+                 seed: Optional[int] = None) -> None:
+        super().__init__(agent_id, seed)
+        # Private value: heterogeneous across traders so books cross
+        self._value = value_estimate * (
+            1.0 + self._rng.uniform(-value_jitter, value_jitter)
+        )
+        self._order_qty = order_qty
+        self._min_coin_reserve = min_coin_reserve
+
+    @property
+    def private_value(self) -> float:
+        return self._value
+
+    def decide(self, obs: dict) -> GTBAction:
+        energy = obs.get("energy", 0)
+        inventory = obs.get("inventory", {})
+        coin = inventory.get(ResourceType.COIN.value, 0.0)
+
+        if energy >= 0.5:
+            # Sell surplus above the private value
+            for rtype in (ResourceType.WOOD, ResourceType.STONE):
+                held = inventory.get(rtype.value, 0.0)
+                if held >= self._order_qty:
+                    ask = self._value * (1.0 + self._rng.random())
+                    return GTBAction(
+                        agent_id=self.agent_id,
+                        action_type=GTBActionType.TRADE_SELL,
+                        resource_type=rtype,
+                        quantity=min(self._order_qty, held),
+                        price=ask,
+                    )
+            # Buy below the private value while keeping a coin reserve
+            affordable = coin - self._min_coin_reserve
+            if affordable >= self._value * self._order_qty:
+                rtype = self._rng.choice(
+                    [ResourceType.WOOD, ResourceType.STONE]
+                )
+                bid = self._value * self._rng.uniform(0.5, 1.0)
+                return GTBAction(
+                    agent_id=self.agent_id,
+                    action_type=GTBActionType.TRADE_BUY,
+                    resource_type=rtype,
+                    quantity=self._order_qty,
+                    price=bid,
+                )
+
+        # Restock: gather like an honest worker
+        if energy >= 1.0:
+            pos = obs.get("position", (0, 0))
+            for cell in obs.get("visible_cells", []):
+                if cell.get("pos") == tuple(pos) and "resource" in cell:
+                    if cell.get("amount", 0) > 0:
+                        return GTBAction(
+                            agent_id=self.agent_id,
+                            action_type=GTBActionType.GATHER,
+                        )
+            return GTBAction(
+                agent_id=self.agent_id,
+                action_type=GTBActionType.MOVE,
+                direction=self._random_direction(),
+            )
+
+        return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+
+
+class CartelWorkerPolicy(GTBWorkerPolicy):
+    """Price-fixing cartel member — collusion with a real economic channel.
+
+    Every member of the coalition quotes the same elevated ask price
+    (the cartel agreement) and never undercuts. When the cartel controls
+    enough of the sell-side liquidity, buyers must pay the cartel price,
+    raising members' sale income above the competitive level. Unlike
+    CollusiveWorkerPolicy (which merely synchronizes action strings and
+    gains nothing), this cartel profits, and is detectable from public
+    market records via the price-fixing signature: near-identical asks
+    across members. Requires a persistent order book
+    (market.order_ttl_steps > 0) and buy-side demand to bite.
+    """
+
+    def __init__(self, agent_id: str, coalition_id: str,
+                 cartel_price: float = 4.0, order_qty: float = 1.0,
+                 seed: Optional[int] = None) -> None:
+        super().__init__(agent_id, seed)
+        self.coalition_id = coalition_id
+        self._cartel_price = cartel_price
+        self._order_qty = order_qty
+
+    def decide(self, obs: dict) -> GTBAction:
+        energy = obs.get("energy", 0)
+        inventory = obs.get("inventory", {})
+
+        # Quote the cartel price on any sellable surplus
+        if energy >= 0.5:
+            for rtype in (ResourceType.WOOD, ResourceType.STONE):
+                held = inventory.get(rtype.value, 0.0)
+                if held >= self._order_qty:
+                    return GTBAction(
+                        agent_id=self.agent_id,
+                        action_type=GTBActionType.TRADE_SELL,
+                        resource_type=rtype,
+                        quantity=min(self._order_qty, held),
+                        price=self._cartel_price,
+                    )
+
+        # Restock like an honest gatherer
+        if energy >= 1.0:
+            pos = obs.get("position", (0, 0))
+            for cell in obs.get("visible_cells", []):
+                if cell.get("pos") == tuple(pos) and "resource" in cell:
+                    if cell.get("amount", 0) > 0:
+                        return GTBAction(
+                            agent_id=self.agent_id,
+                            action_type=GTBActionType.GATHER,
+                        )
+            return GTBAction(
+                agent_id=self.agent_id,
+                action_type=GTBActionType.MOVE,
+                direction=self._random_direction(),
+            )
+
         return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
 
 

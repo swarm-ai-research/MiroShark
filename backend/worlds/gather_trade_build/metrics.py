@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from worlds.gather_trade_build.entities import (
     GTBEvent,
     WorkerState,
 )
+
+if TYPE_CHECKING:
+    from worlds.gather_trade_build.config import UtilityConfig
 
 
 @dataclass
@@ -29,20 +32,35 @@ class GTBMetrics:
     # Tax revenue
     total_tax_revenue: float = 0.0
     mean_effective_tax_rate: float = 0.0
+    total_tax_shortfall: float = 0.0  # tax owed but unpayable this epoch
+    total_redistributed: float = 0.0  # lump-sum transfers paid out
 
     # Inequality
-    gini_coefficient: float = 0.0
+    gini_coefficient: float = 0.0  # per-epoch gross income (noisy flow)
+    gini_wealth: float = 0.0  # coin + house value (cumulative endowment)
     atkinson_index: float = 0.0  # with epsilon=0.5
 
     # Welfare
-    welfare: float = 0.0  # prod_weight * prod - ineq_weight * ineq
+    # Legacy scalar: prod_weight * mean_prod - ineq_weight * gini. Kept for
+    # dashboard continuity but note the unit mismatch (coins vs [0,1]).
+    welfare: float = 0.0
+    # AI Economist objective: mean production x (1 - wealth Gini)
+    welfare_eq_prod: float = 0.0
+    # Mean isoelastic worker utility (CRRA coin + houses - labor)
+    welfare_utilitarian: float = 0.0
 
     # Enforcement
     total_audits: int = 0
     total_catches: int = 0
     total_fines: float = 0.0
-    undetected_evasion_rate: float = 0.0  # fraction of evasion not caught
+    # Fraction of hidden income (gross - reported) whose hider was NOT
+    # caught by an audit this epoch. 0.0 when nothing was hidden.
+    undetected_evasion_rate: float = 0.0
     enforcement_cost: float = 0.0  # proxy: audit_count * per_audit_cost
+
+    # Market activity
+    total_trades: int = 0
+    total_trade_volume: float = 0.0  # units of resources exchanged
 
     # Bunching
     bunching_intensity: float = 0.0  # fraction of incomes within bin_width of thresholds
@@ -50,11 +68,20 @@ class GTBMetrics:
     # Collusion
     collusion_events_detected: int = 0
     collusion_suspicion_mean: float = 0.0
+    # Detector quality vs true coalition labels. Conventions when
+    # undefined: precision = 1.0 with no flags (no false alarms),
+    # recall = 1.0 with no true coalition pairs (nothing to find).
+    collusion_precision: float = 1.0
+    collusion_recall: float = 1.0
 
     # SWARM systemic-risk
     exploit_frequency: float = 0.0  # misreport + collusion events / total events
     governance_backfire_events: int = 0  # fines on honest agents (false positives)
     variance_amplification: float = 0.0  # std(income) / mean(income)
+
+    # Ledger coherence (from the env's epoch_ledger event)
+    income_coin_gap: float = 0.0  # booked gross income minus coin actually received
+    coin_conserved: bool = True  # worker coin == itemized mints - burns
 
     def to_dict(self) -> dict:
         return {
@@ -64,20 +91,31 @@ class GTBMetrics:
             "total_houses_built": self.total_houses_built,
             "total_tax_revenue": self.total_tax_revenue,
             "mean_effective_tax_rate": self.mean_effective_tax_rate,
+            "total_tax_shortfall": self.total_tax_shortfall,
+            "total_redistributed": self.total_redistributed,
             "gini_coefficient": self.gini_coefficient,
+            "gini_wealth": self.gini_wealth,
             "atkinson_index": self.atkinson_index,
             "welfare": self.welfare,
+            "welfare_eq_prod": self.welfare_eq_prod,
+            "welfare_utilitarian": self.welfare_utilitarian,
             "total_audits": self.total_audits,
             "total_catches": self.total_catches,
             "total_fines": self.total_fines,
             "undetected_evasion_rate": self.undetected_evasion_rate,
             "enforcement_cost": self.enforcement_cost,
+            "total_trades": self.total_trades,
+            "total_trade_volume": self.total_trade_volume,
             "bunching_intensity": self.bunching_intensity,
             "collusion_events_detected": self.collusion_events_detected,
             "collusion_suspicion_mean": self.collusion_suspicion_mean,
+            "collusion_precision": self.collusion_precision,
+            "collusion_recall": self.collusion_recall,
             "exploit_frequency": self.exploit_frequency,
             "governance_backfire_events": self.governance_backfire_events,
             "variance_amplification": self.variance_amplification,
+            "income_coin_gap": self.income_coin_gap,
+            "coin_conserved": self.coin_conserved,
         }
 
 
@@ -149,6 +187,8 @@ def compute_gtb_metrics(
     ineq_weight: float = 0.5,
     per_audit_cost: float = 0.5,
     bin_width: float = 1.0,
+    utility_config: Optional["UtilityConfig"] = None,
+    house_value: float = 6.0,
 ) -> GTBMetrics:
     """Compute all metrics for one epoch.
 
@@ -165,6 +205,10 @@ def compute_gtb_metrics(
     Returns:
         Populated GTBMetrics.
     """
+    from worlds.gather_trade_build.config import UtilityConfig
+    from worlds.gather_trade_build.entities import ResourceType
+    from worlds.gather_trade_build.reward import compute_isoelastic_utility
+
     incomes = [w.gross_income_this_epoch for w in workers.values()]
     n = len(incomes) or 1
 
@@ -174,10 +218,30 @@ def compute_gtb_metrics(
     gini = compute_gini(incomes)
     atkinson = compute_atkinson(incomes)
 
+    wealths = [
+        w.get_resource(ResourceType.COIN) + house_value * w.houses_built
+        for w in workers.values()
+    ]
+    gini_wealth = compute_gini(wealths)
+
     welfare = prod_weight * mean_prod - ineq_weight * gini
+    welfare_eq_prod = mean_prod * (1.0 - gini_wealth)
+
+    ucfg = utility_config or UtilityConfig()
+    welfare_utilitarian = (
+        sum(compute_isoelastic_utility(w, ucfg) for w in workers.values()) / n
+    )
 
     # Tax
     total_tax = sum(w.tax_paid_this_epoch for w in workers.values())
+    tax_shortfall = sum(
+        e.details.get("shortfall", 0.0)
+        for e in events if e.event_type == "tax"
+    )
+    redistributed = sum(
+        e.details.get("amount", 0.0)
+        for e in events if e.event_type == "redistribution"
+    )
     mean_eff_rate = (
         sum(
             w.tax_paid_this_epoch / max(w.reported_income_this_epoch, 1e-9)
@@ -185,13 +249,26 @@ def compute_gtb_metrics(
         ) / n
     )
 
-    # Enforcement
+    # Enforcement. Undetected evasion is measured on hidden income: the
+    # share of (gross - reported) belonging to workers no audit caught.
+    # audit_miss exists again under selection_mode=observable (a selected
+    # audit that failed its detection_power roll) and counts as an audit.
     audit_events = [e for e in events if e.event_type in ("audit_caught", "audit_miss", "audit_false_positive")]
     catches = [e for e in events if e.event_type == "audit_caught"]
-    misses = [e for e in events if e.event_type == "audit_miss"]
-    total_evasion_attempts = len(catches) + len(misses)
-    undetected_rate = len(misses) / max(total_evasion_attempts, 1)
+    caught_agents = {e.agent_id for e in catches}
+    hidden_total = 0.0
+    hidden_uncaught = 0.0
+    for aid, w in workers.items():
+        hidden = max(0.0, w.gross_income_this_epoch - w.reported_income_this_epoch)
+        hidden_total += hidden
+        if aid not in caught_agents:
+            hidden_uncaught += hidden
+    undetected_rate = hidden_uncaught / hidden_total if hidden_total > 1e-9 else 0.0
     total_fines = sum(e.details.get("fine", 0.0) for e in catches)
+
+    # Market activity
+    trade_events = [e for e in events if e.event_type == "trade"]
+    trade_volume = sum(e.details.get("quantity", 0.0) for e in trade_events)
 
     # Bunching
     bunching = compute_bunching_intensity(incomes, bracket_thresholds, bin_width)
@@ -203,6 +280,28 @@ def compute_gtb_metrics(
     ]
     mean_suspicion = (
         sum(suspicion_scores) / len(suspicion_scores) if suspicion_scores else 0.0
+    )
+
+    # Detector precision/recall vs true coalition labels
+    flagged_pairs = set()
+    for e in collusion_events:
+        agents = e.details.get("agents", [])
+        if len(agents) == 2:
+            flagged_pairs.add(frozenset(agents))
+    true_pairs = set()
+    worker_items = list(workers.items())
+    for a in range(len(worker_items)):
+        for b in range(a + 1, len(worker_items)):
+            aid_a, w_a = worker_items[a]
+            aid_b, w_b = worker_items[b]
+            if w_a.coalition_id is not None and w_a.coalition_id == w_b.coalition_id:
+                true_pairs.add(frozenset((aid_a, aid_b)))
+    true_positive_pairs = flagged_pairs & true_pairs
+    precision = (
+        len(true_positive_pairs) / len(flagged_pairs) if flagged_pairs else 1.0
+    )
+    recall = (
+        len(true_positive_pairs) / len(true_pairs) if true_pairs else 1.0
     )
 
     # SWARM systemic-risk metrics
@@ -222,6 +321,17 @@ def compute_gtb_metrics(
 
     total_houses = sum(w.houses_built for w in workers.values())
 
+    # Ledger coherence from the env's epoch_ledger event (one per epoch)
+    ledger_events = [e for e in events if e.event_type == "epoch_ledger"]
+    income_coin_gap = (
+        ledger_events[-1].details.get("income_coin_gap", 0.0)
+        if ledger_events else 0.0
+    )
+    coin_conserved = (
+        ledger_events[-1].details.get("coin_conserved", True)
+        if ledger_events else True
+    )
+
     return GTBMetrics(
         epoch=epoch,
         total_production=total_prod,
@@ -229,20 +339,31 @@ def compute_gtb_metrics(
         total_houses_built=total_houses,
         total_tax_revenue=total_tax,
         mean_effective_tax_rate=mean_eff_rate,
+        total_tax_shortfall=tax_shortfall,
+        total_redistributed=redistributed,
         gini_coefficient=gini,
+        gini_wealth=gini_wealth,
         atkinson_index=atkinson,
         welfare=welfare,
+        welfare_eq_prod=welfare_eq_prod,
+        welfare_utilitarian=welfare_utilitarian,
         total_audits=len(audit_events),
         total_catches=len(catches),
         total_fines=total_fines,
         undetected_evasion_rate=undetected_rate,
         enforcement_cost=len(audit_events) * per_audit_cost,
+        total_trades=len(trade_events),
+        total_trade_volume=trade_volume,
         bunching_intensity=bunching,
         collusion_events_detected=len(collusion_events),
         collusion_suspicion_mean=mean_suspicion,
+        collusion_precision=precision,
+        collusion_recall=recall,
         exploit_frequency=exploit_freq,
         governance_backfire_events=sum(
             1 for e in events if e.event_type == "audit_false_positive"
         ),
         variance_amplification=variance_amp,
+        income_coin_gap=income_coin_gap,
+        coin_conserved=coin_conserved,
     )

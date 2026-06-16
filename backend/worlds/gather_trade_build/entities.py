@@ -70,6 +70,9 @@ class MarketOrder:
     price_per_unit: float  # In coins
     is_buy: bool = True  # True=buy, False=sell
     step: int = 0
+    # Persistent-book fields (market.order_ttl_steps > 0)
+    expiry_step: int = 0  # step after which the order is cancelled
+    escrowed_coin: float = 0.0  # buyer coin locked at post time
 
 
 @dataclass
@@ -108,12 +111,20 @@ class WorkerState:
     # Income shifting (deferred income account)
     deferred_income: float = 0.0
 
+    # Unpaid taxes/fines carried across epochs (taxation.debt_enabled)
+    tax_debt: float = 0.0
+
     # Houses built
     houses_built: int = 0
 
     # Energy budget
     energy: float = 100.0
     max_energy: float = 100.0
+
+    # Labor effort (energy actually spent on actions), for labor
+    # disutility in the isoelastic utility function
+    effort_this_epoch: float = 0.0
+    cumulative_effort: float = 0.0
 
     # Skill multiplier (heterogeneous agents)
     skill_gather: float = 1.0
@@ -150,6 +161,7 @@ class WorkerState:
         self.gross_income_this_epoch = 0.0
         self.reported_income_this_epoch = 0.0
         self.tax_paid_this_epoch = 0.0
+        self.effort_this_epoch = 0.0
 
 
 @dataclass

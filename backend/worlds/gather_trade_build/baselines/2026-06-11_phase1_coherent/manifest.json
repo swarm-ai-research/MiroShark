@@ -1,0 +1,177 @@
+{
+  "scenario_id": "ai_economist_coherent",
+  "config_hash": "db411453b8fc9cf8",
+  "git_sha": "3ac508e33d23f78acbb865d6387f47c27c37bfe3",
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30
+  ],
+  "n_seeds": 30,
+  "created_at": "2026-06-11T03:27:39",
+  "coin_conserved_all_runs": true,
+  "scenario": {
+    "scenario_id": "ai_economist_coherent",
+    "description": "GTB economy with coherent coin ledger, lump-sum redistribution of tax revenue, and tax-debt carryforward.\n",
+    "motif": "ai_economist",
+    "domain": {
+      "type": "gather_trade_build",
+      "ledger_mode": "coin",
+      "map": {
+        "height": 15,
+        "width": 15,
+        "wood_density": 0.2,
+        "stone_density": 0.15,
+        "resource_regen_rate": 0.1,
+        "resource_max_amount": 5.0
+      },
+      "market": {
+        "enabled": true,
+        "transaction_fee_rate": 0.02,
+        "price_floor": 0.1,
+        "price_ceiling": 100.0
+      },
+      "build": {
+        "wood_cost": 3.0,
+        "stone_cost": 3.0,
+        "income_per_house_per_step": 1.0,
+        "max_houses_per_agent": 10,
+        "house_income_mode": "mint"
+      },
+      "energy_per_step": 10.0,
+      "energy_cost_move": 1.0,
+      "energy_cost_gather": 1.0,
+      "energy_cost_trade": 0.5,
+      "energy_cost_build": 2.0,
+      "taxation": {
+        "schedule_family": "piecewise",
+        "brackets": [
+          {
+            "threshold": 0.0,
+            "rate": 0.1
+          },
+          {
+            "threshold": 10.0,
+            "rate": 0.2
+          },
+          {
+            "threshold": 25.0,
+            "rate": 0.35
+          },
+          {
+            "threshold": 50.0,
+            "rate": 0.45
+          }
+        ],
+        "smoothing": 0.0,
+        "damping": 0.3,
+        "update_interval_epochs": 1,
+        "allow_non_monotone": false,
+        "redistribution": "lump_sum",
+        "debt_enabled": true
+      },
+      "planner": {
+        "planner_type": "heuristic",
+        "objective": "welfare",
+        "prod_weight": 1.0,
+        "ineq_weight": 0.5,
+        "learning_rate": 0.01,
+        "exploration_rate": 0.1,
+        "update_interval_epochs": 1
+      },
+      "gaming": {
+        "income_shifting_enabled": true,
+        "max_shift_fraction_per_epoch": 0.3,
+        "gaming_cost_fraction": 0.05,
+        "bunching_detection_enabled": true,
+        "bunching_bin_width": 1.0
+      },
+      "misreporting": {
+        "enabled": true,
+        "max_underreport_fraction": 0.5,
+        "audit_probability": 0.2,
+        "risk_based_audit_multiplier": 1.5,
+        "fine_multiplier": 2.0,
+        "reputation_penalty_per_catch": 0.1,
+        "freeze_on_repeat": true,
+        "freeze_after_n_catches": 3,
+        "freeze_duration_epochs": 2
+      },
+      "collusion": {
+        "enabled": true,
+        "max_coalition_size": 4,
+        "min_coalition_size": 2,
+        "detection_window_steps": 20,
+        "similarity_threshold": 0.7,
+        "suspicion_score_threshold": 0.6,
+        "response_audit_multiplier": 2.0,
+        "response_stake_increase": 1.5,
+        "response_trade_restriction_epochs": 1
+      }
+    },
+    "agents": [
+      {
+        "policy": "honest",
+        "count": 5,
+        "skill_gather": 1.0,
+        "skill_build": 1.0
+      },
+      {
+        "policy": "honest",
+        "count": 2,
+        "skill_gather": 1.5,
+        "skill_build": 1.2
+      },
+      {
+        "policy": "gaming",
+        "count": 2,
+        "shift_fraction": 0.25,
+        "skill_gather": 1.0
+      },
+      {
+        "policy": "evasive",
+        "count": 2,
+        "underreport_fraction": 0.3,
+        "skill_gather": 1.0
+      },
+      {
+        "policy": "collusive",
+        "count": 3,
+        "coalition_id": "cartel_alpha",
+        "skill_gather": 1.0
+      }
+    ],
+    "simulation": {
+      "n_epochs": 20,
+      "steps_per_epoch": 15,
+      "seed": 42
+    }
+  }
+}

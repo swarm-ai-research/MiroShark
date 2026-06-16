@@ -19,11 +19,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from worlds.gather_trade_build.agents import (
+    CartelWorkerPolicy,
     CollusiveWorkerPolicy,
     EvasiveWorkerPolicy,
     GamingWorkerPolicy,
     GTBWorkerPolicy,
     HonestWorkerPolicy,
+    RationalWorkerPolicy,
+    ZITraderPolicy,
 )
 from worlds.gather_trade_build.config import GTBConfig
 from worlds.gather_trade_build.entities import ResourceType
@@ -38,11 +41,30 @@ def _create_policy(
     agent_spec: Dict[str, Any],
     agent_id: str,
     seed: int,
+    utility_defaults: Optional[Dict[str, float]] = None,
 ) -> GTBWorkerPolicy:
     """Create a worker policy from a spec dict."""
     ptype = agent_spec.get("policy", "honest")
+    udef = utility_defaults or {}
     if ptype == "honest":
         return HonestWorkerPolicy(agent_id, seed=seed)
+    elif ptype == "rational":
+        return RationalWorkerPolicy(
+            agent_id,
+            eta=agent_spec.get("eta", udef.get("eta", 0.35)),
+            labor_coeff=agent_spec.get(
+                "labor_coeff", udef.get("labor_coeff", 0.15)
+            ),
+            seed=seed,
+        )
+    elif ptype == "trader":
+        return ZITraderPolicy(
+            agent_id,
+            value_estimate=agent_spec.get("value_estimate", 2.0),
+            value_jitter=agent_spec.get("value_jitter", 0.5),
+            order_qty=agent_spec.get("order_qty", 1.0),
+            seed=seed,
+        )
     elif ptype == "gaming":
         return GamingWorkerPolicy(
             agent_id,
@@ -53,6 +75,14 @@ def _create_policy(
         return EvasiveWorkerPolicy(
             agent_id,
             underreport_fraction=agent_spec.get("underreport_fraction", 0.3),
+            seed=seed,
+        )
+    elif ptype == "cartel":
+        return CartelWorkerPolicy(
+            agent_id,
+            coalition_id=agent_spec.get("coalition_id", "default"),
+            cartel_price=agent_spec.get("cartel_price", 4.0),
+            order_qty=agent_spec.get("order_qty", 1.0),
             seed=seed,
         )
     elif ptype == "collusive":
@@ -97,11 +127,17 @@ class GTBScenarioRunner:
                 skill_b = spec.get("skill_build", 1.0)
                 self._env.add_worker(agent_id, skill_gather=skill_g,
                                      skill_build=skill_b)
-                policy = _create_policy(spec, agent_id, worker_seed)
+                policy = _create_policy(
+                    spec, agent_id, worker_seed,
+                    utility_defaults={
+                        "eta": config.utility.eta,
+                        "labor_coeff": config.utility.labor_coeff,
+                    },
+                )
                 self._policies[agent_id] = policy
 
-                # Set coalition if collusive
-                if spec.get("policy") == "collusive":
+                # Set coalition if collusive/cartel
+                if spec.get("policy") in ("collusive", "cartel"):
                     worker = self._env.workers[agent_id]
                     worker.coalition_id = spec.get("coalition_id", "default")
 
@@ -127,12 +163,16 @@ class GTBScenarioRunner:
             self._n_epochs, self._steps_per_epoch, len(self._policies),
         )
 
+        last_snapshot = None
         for epoch in range(self._n_epochs):
             epoch_events = []
 
-            # Planner update at epoch boundary
-            if self._planner.should_update(epoch):
-                stats = self._env.get_aggregate_stats()
+            # Planner update at epoch boundary. Stats must come from the
+            # previous epoch's pre-reset snapshot: end_epoch() has already
+            # zeroed the live per-epoch counters, so get_aggregate_stats()
+            # here would feed the planner an empty epoch.
+            if self._planner.should_update(epoch) and last_snapshot is not None:
+                stats = self._env.stats_from_snapshot(last_snapshot)
                 new_brackets = self._planner.update(stats)
                 logger.debug(
                     "Epoch %d: planner updated brackets -> %s",
@@ -157,6 +197,7 @@ class GTBScenarioRunner:
             # EpochResult contains both events and a pre-reset snapshot.
             epoch_result = self._env.end_epoch()
             epoch_events.extend(epoch_result.events)
+            last_snapshot = epoch_result.snapshot
 
             # Reset evasive worker epoch state
             for policy in self._policies.values():
@@ -172,6 +213,10 @@ class GTBScenarioRunner:
                 bracket_thresholds=self._env.tax_schedule.bracket_thresholds,
                 prod_weight=self._config.planner.prod_weight,
                 ineq_weight=self._config.planner.ineq_weight,
+                utility_config=self._config.utility,
+                house_value=(
+                    self._config.build.wood_cost + self._config.build.stone_cost
+                ),
             )
             self._epoch_metrics.append(metrics)
 

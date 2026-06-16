@@ -506,3 +506,51 @@ def _stub_obs(agent_id: str):
         "visible_cells": [],
         "frozen": False,
     }
+
+
+class TestPhase5ObservationGrounding:
+    """Phase 5: agents see last-epoch outcomes and market prices."""
+
+    def test_last_epoch_summary_injected_after_epoch_close(self, small_world):
+        # Before any epoch closes, there is nothing to report
+        obs = small_world._obs_with_markets("worker_0")
+        assert obs["last_epoch"] is None
+
+        for _ in range(3):  # steps_per_epoch=3 -> closes the epoch
+            small_world.step()
+        obs = small_world._obs_with_markets("worker_0")
+        summary = obs["last_epoch"]
+        assert summary is not None
+        for key in ("gross_income", "reported_income", "tax_paid",
+                    "effective_tax_rate", "effort",
+                    "times_audited_total", "times_caught_total"):
+            assert key in summary
+
+    def test_obs_carries_market_info_and_effort(self, small_world):
+        obs = small_world._obs_with_markets("worker_0")
+        assert "market_info" in obs
+        assert "wood" in obs["market_info"]
+        assert "effort_this_epoch" in obs
+
+    def test_llm_obs_render_includes_grounding_fields(self, gtb_modules):
+        _, llm_mod = gtb_modules
+        obs = {
+            "position": (1, 1),
+            "inventory": {"coin": 10.0},
+            "energy": 8.0,
+            "effort_this_epoch": 2.0,
+            "market_info": {"wood": {"last_price": 1.5}},
+            "last_epoch": {"tax_paid": 3.0},
+            "visible_cells": [],
+        }
+        rendered = llm_mod._render_obs(obs)
+        assert '"market_prices"' in rendered and '"last_price": 1.5' in rendered
+        assert '"last_epoch"' in rendered and '"tax_paid": 3.0' in rendered
+        assert '"effort_this_epoch": 2.0' in rendered
+
+    def test_system_prompt_matches_env_build_semantics(self, gtb_modules):
+        _, llm_mod = gtb_modules
+        # The env builds on the worker's current cell; the prompt must not
+        # claim adjacency (the old prompt did).
+        assert "adjacent" not in llm_mod._SYSTEM_PROMPT
+        assert "standing on" in llm_mod._SYSTEM_PROMPT

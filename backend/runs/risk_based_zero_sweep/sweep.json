@@ -1,0 +1,147 @@
+{
+  "scenario": "worlds/gather_trade_build/scenarios/ai_economist_full.yaml",
+  "n_epochs": 30,
+  "steps_per_epoch": 15,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49
+  ],
+  "cells": [
+    {
+      "index": 0,
+      "label": "audit_probability=0.0_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.0,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 1,
+      "label": "audit_probability=0.025_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.025,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 2,
+      "label": "audit_probability=0.05_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.05,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 3,
+      "label": "audit_probability=0.1_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.1,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 4,
+      "label": "audit_probability=0.15_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.15,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 5,
+      "label": "audit_probability=0.2_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.2,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 6,
+      "label": "audit_probability=0.3_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.3,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 7,
+      "label": "audit_probability=0.5_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.5,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 8,
+      "label": "audit_probability=0.65_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.65,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 9,
+      "label": "audit_probability=0.8_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.8,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    },
+    {
+      "index": 10,
+      "label": "audit_probability=0.95_risk_based_audit_multiplier=0.0",
+      "overrides": {
+        "misreporting.audit_probability": 0.95,
+        "misreporting.risk_based_audit_multiplier": 0.0
+      }
+    }
+  ]
+}

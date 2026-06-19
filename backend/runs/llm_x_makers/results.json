@@ -1,0 +1,92 @@
+[
+  {
+    "arm": "llm_only",
+    "seed": 0,
+    "total_actions": 96,
+    "orders_placed": 18,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": 0.0
+  },
+  {
+    "arm": "llm_only",
+    "seed": 1,
+    "total_actions": 96,
+    "orders_placed": 18,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": -0.09999999999999992
+  },
+  {
+    "arm": "llm_only",
+    "seed": 2,
+    "total_actions": 96,
+    "orders_placed": 14,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": 0.375
+  },
+  {
+    "arm": "llm_only",
+    "seed": 3,
+    "total_actions": 96,
+    "orders_placed": 17,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": 0.0
+  },
+  {
+    "arm": "llm_only",
+    "seed": 4,
+    "total_actions": 96,
+    "orders_placed": 19,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": 0.0
+  },
+  {
+    "arm": "llm_plus_makers",
+    "seed": 0,
+    "total_actions": 144,
+    "orders_placed": 64,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": -0.3666666666666667
+  },
+  {
+    "arm": "llm_plus_makers",
+    "seed": 1,
+    "total_actions": 144,
+    "orders_placed": 62,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": -0.38333333333333336
+  },
+  {
+    "arm": "llm_plus_makers",
+    "seed": 2,
+    "total_actions": 144,
+    "orders_placed": 61,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": 0.0
+  },
+  {
+    "arm": "llm_plus_makers",
+    "seed": 3,
+    "total_actions": 144,
+    "orders_placed": 66,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": -0.25
+  },
+  {
+    "arm": "llm_plus_makers",
+    "seed": 4,
+    "total_actions": 144,
+    "orders_placed": 66,
+    "trades_executed": 0,
+    "executed_rate": 0.0,
+    "final_welfare": 0.45000000000000007
+  }
+]

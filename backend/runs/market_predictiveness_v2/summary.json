@@ -1,0 +1,20 @@
+{
+  "no_stakes": {
+    "n": 139.0,
+    "brier_score": 0.25,
+    "yes_rate": 0.4676258992805755,
+    "mean_yes_prob": 0.5
+  },
+  "one_sided": {
+    "n": 43.0,
+    "brier_score": 0.2871219976744186,
+    "yes_rate": 0.627906976744186,
+    "mean_yes_prob": 0.579046511627907
+  },
+  "two_sided": {
+    "n": 28.0,
+    "brier_score": 0.4519325928571429,
+    "yes_rate": 0.35714285714285715,
+    "mean_yes_prob": 0.7721571428571429
+  }
+}

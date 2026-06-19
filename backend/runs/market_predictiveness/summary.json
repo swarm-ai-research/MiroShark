@@ -1,0 +1,8 @@
+{
+  "no_stakes": {
+    "n": 112.0,
+    "brier_score": 0.25,
+    "yes_rate": 0.38392857142857145,
+    "mean_yes_prob": 0.5
+  }
+}

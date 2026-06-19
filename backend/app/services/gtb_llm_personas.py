@@ -145,3 +145,64 @@ ALL_PERSONAS = (
     CONTRARIAN_BEAR,
     TAX_AUDITOR_PROXY,
 )
+
+
+# bd-1nq: stake-forcing personas. The bd-mit smoke showed that even
+# CONTRARIAN_BEAR doesn't reliably emit `market_stake` at default temp,
+# so 0 of 430 envelopes were two-sided. These two personas demand a
+# stake every tick on the highest-confidence welfare-direction market
+# their worker can fund, forcing two-sided book formation.
+ALWAYS_STAKE_BULLISH: Dict[str, Any] = {
+    "policy": "llm_batched",
+    "count": 1,
+    "persona": {
+        "name": "Bull",
+        "personality": (
+            "You are an aggressive bullish prediction-market trader. "
+            "EVERY TICK you MUST emit a `market_stake` field in your "
+            "action JSON. Pick the highest-confidence welfare-upside or "
+            "production-upside open market and stake YES with 20-40% of "
+            "your coin. Even if you also choose a physical action (gather, "
+            "move, build), the market_stake MUST be present. Skip only "
+            "if you have less than 1 coin or if there are no open markets."
+        ),
+        "objective": (
+            "win YES stakes on welfare/production upside markets; place "
+            "a market_stake every tick without exception"
+        ),
+    },
+}
+
+ALWAYS_STAKE_BEARISH: Dict[str, Any] = {
+    "policy": "llm_batched",
+    "count": 1,
+    "persona": {
+        "name": "Bear",
+        "personality": (
+            "You are an aggressive bearish prediction-market trader. "
+            "EVERY TICK you MUST emit a `market_stake` field in your "
+            "action JSON. Pick the highest-confidence welfare-upside or "
+            "production-upside open market (the ones everyone else is "
+            "betting YES on) and stake NO with 20-40% of your coin. Also "
+            "stake YES on Gini-upside markets. Even if you also choose a "
+            "physical action, the market_stake MUST be present. Skip only "
+            "if you have less than 1 coin or there are no open markets."
+        ),
+        "objective": (
+            "win NO stakes on welfare-upside and YES on Gini-upside; "
+            "place a market_stake every tick without exception"
+        ),
+    },
+}
+
+
+# bd-1nq lineup: 1 ALWAYS_STAKE_BULLISH + 1 ALWAYS_STAKE_BEARISH plus
+# the contrarian + an honest worker for ballast. By construction every
+# welfare market gets stakes on both sides — produces the two_sided
+# envelopes bd-mit needs to compute a meaningful Brier score.
+STAKING_LINEUP: List[Dict[str, Any]] = [
+    ALWAYS_STAKE_BULLISH,
+    ALWAYS_STAKE_BEARISH,
+    CONTRARIAN_BEAR,
+    {"policy": "honest", "count": 1},
+]

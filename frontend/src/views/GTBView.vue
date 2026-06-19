@@ -73,6 +73,9 @@
             <span class="badge">Top signal</span>
             <span class="dir">{{ headline.direction }}</span>
             <span class="tier">{{ headline.confidence_tier }}</span>
+            <span class="source" :class="`source-${headline.confidence_source}`" :title="sourceTooltip(headline.confidence_source)">
+              {{ headline.confidence_source }}
+            </span>
           </div>
           <div class="q">{{ headline.suggested_market_title }}</div>
           <div class="probs">
@@ -262,6 +265,13 @@ const recentStakeHistory = computed(() =>
 
 const headline = computed(() => polymarket.value?.headline || null)
 
+const sourceTooltip = (src) => ({
+  two_sided: 'Both YES and NO have stakes — actual price discovery.',
+  one_sided: 'Only one side staked. This is sentiment, not a forecast — do not size positions on it.',
+  no_stakes: 'No stakes yet — yes_probability is the 0.5 Laplace prior.',
+  resolved: 'Market already settled.',
+}[src] || src)
+
 const series = (key) =>
   (state.value?.metrics_history || []).map(m => m[key])
 
@@ -363,6 +373,11 @@ button.danger { border-color: #ff5577; color: #ff5577; }
 .headline-card.dir-bearish .dir { color: #ff7ad9; }
 .headline-card.dir-neutral .dir { color: #8b949e; }
 .headline-card .tier { font-size: 11px; color: #c084fc; text-transform: uppercase; letter-spacing: 0.04em; }
+.headline-card .source { font-size: 10px; padding: 1px 5px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.04em; cursor: help; }
+.headline-card .source.source-two_sided { background: #163; color: #7cf29c; }
+.headline-card .source.source-one_sided { background: #533; color: #ff9a66; }
+.headline-card .source.source-no_stakes { background: #333; color: #888; }
+.headline-card .source.source-resolved { background: #225; color: #7ab8ff; }
 .headline-card .q { color: #e6edf3; font-size: 13px; margin-bottom: 6px; }
 .headline-card .probs { font-family: monospace; font-size: 12px; display: flex; gap: 6px; align-items: center; }
 .headline-card .probs .yes { color: #7cf29c; }

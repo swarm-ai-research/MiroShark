@@ -91,6 +91,31 @@ def _create_policy(
             coalition_id=agent_spec.get("coalition_id", "default"),
             seed=seed,
         )
+    elif ptype == "maker":
+        from worlds.gather_trade_build.agents import MakerWorkerPolicy
+        return MakerWorkerPolicy(
+            agent_id,
+            seed=seed,
+            sell_markup=agent_spec.get("sell_markup", 0.2),
+            buy_discount=agent_spec.get("buy_discount", 0.2),
+            target_inventory=agent_spec.get("target_inventory", 5.0),
+        )
+    elif ptype == "market_aware":
+        from worlds.gather_trade_build.agents import MarketAwareHonestPolicy
+        return MarketAwareHonestPolicy(
+            agent_id,
+            seed=seed,
+            build_wood_threshold=agent_spec.get("build_wood_threshold", 3.0),
+            build_stone_threshold=agent_spec.get("build_stone_threshold", 3.0),
+        )
+    elif ptype == "tax_aware":
+        from worlds.gather_trade_build.agents import TaxAwareHonestPolicy
+        return TaxAwareHonestPolicy(
+            agent_id,
+            seed=seed,
+            rate_threshold=agent_spec.get("rate_threshold", 0.30),
+            effort_suppression=agent_spec.get("effort_suppression", 0.7),
+        )
     else:
         logger.warning("Unknown policy type '%s', defaulting to honest", ptype)
         return HonestWorkerPolicy(agent_id, seed=seed)

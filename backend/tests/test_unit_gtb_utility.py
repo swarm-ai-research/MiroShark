@@ -122,8 +122,11 @@ def _revenue_at_rate(rate: float, seeds=(1, 2, 3)) -> float:
             "map": {"height": 8, "width": 8, "wood_density": 0.4,
                     "stone_density": 0.2},
             "taxation": {"brackets": [{"threshold": 0.0, "rate": rate}]},
-            # Static schedule: isolate the worker response
-            "planner": {"planner_type": "rl"},
+            # Static schedule: isolate the worker response. `rl` is now a
+            # live REINFORCE planner (P1 trio), so hold it inert by pushing
+            # the update interval past the 5-epoch horizon rather than
+            # relying on the old no-op stub behaviour.
+            "planner": {"planner_type": "rl", "update_interval_epochs": 999},
         },
         "agents": [{"policy": "rational", "count": 6}],
         "simulation": {"n_epochs": 5, "steps_per_epoch": 10},

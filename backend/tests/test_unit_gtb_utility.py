@@ -240,6 +240,20 @@ def test_saez_elasticity_estimate_updates_and_stays_bounded():
     assert 0.05 <= planner.elasticity_estimate <= 2.0
 
 
+def test_saez_targets_highest_populated_bracket():
+    """bd-anv/bd-kk5: when z* (the realized top-tail cutoff) sits below the
+    configured top bracket, Saez must optimize the highest *populated*
+    bracket (the one containing z*), not the empty top bracket."""
+    planner = _saez_planner(top_rate=0.45)  # schedule [0.0, 10.0, 50.0]
+    # z*=12 lands in the [10, 50) bracket (index 1); fat tail -> rate rises.
+    for _ in range(3):
+        brackets = planner.update({"top_threshold": 12.0, "top_mean_income": 200.0})
+    assert brackets[0].rate == pytest.approx(0.1)   # bottom bracket untouched
+    assert brackets[1].rate > 0.2                    # populated bracket optimized
+    # empty top bracket carried up so the schedule stays monotone
+    assert brackets[2].rate >= brackets[1].rate - 1e-9
+
+
 def test_saez_top_tail_falls_back_when_top_bracket_unpopulated():
     """bd-kk5: when the configured top bracket sits above the economy's
     realized income scale, no worker reaches it and top_mean_income would

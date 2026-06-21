@@ -41,6 +41,7 @@ import csv
 import itertools
 import json
 import logging
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -153,6 +154,25 @@ class CellRunSpec:
     n_epochs: int
     steps_per_epoch: int
     output_root: str
+    cells_mode: str = "targz"  # targz | dir | none
+
+
+def _compress_seed_dir(out_dir: Path) -> None:
+    """Replace a per-seed export directory with a single ``.tar.gz``.
+
+    A large sweep writes thousands of tiny files (each seed dir holds an
+    event_log.jsonl plus a few CSV/JSON files); left as loose files they
+    burn disk blocks and inodes out of proportion to their content. The
+    event log is highly repetitive JSON and compresses ~10-20x. The
+    archive lands next to the dir as ``seed_<n>.tar.gz`` and the original
+    tree is removed.
+    """
+    import tarfile
+
+    archive = out_dir.with_suffix(".tar.gz")
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(out_dir, arcname=out_dir.name)
+    shutil.rmtree(out_dir)
 
 
 def _run_one(spec: CellRunSpec) -> Dict[str, Any]:
@@ -180,10 +200,16 @@ def _run_one(spec: CellRunSpec) -> Dict[str, Any]:
     metrics_list = runner.run()
     elapsed = time.time() - t0
 
-    # Export per-(cell, seed) run dir for downstream notebooks.
-    out_dir = Path(spec.output_root) / "cells" / f"cell_{spec.cell_index:03d}" / f"seed_{spec.seed}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    runner.export(str(out_dir))
+    # Export per-(cell, seed) run dir for downstream notebooks. The
+    # aggregates are built from the returned summary below, not by
+    # re-reading these dirs, so the dump is optional: 'none' skips it
+    # entirely, 'targz' (default) compresses it to bound disk + inode use.
+    if spec.cells_mode != "none":
+        out_dir = Path(spec.output_root) / "cells" / f"cell_{spec.cell_index:03d}" / f"seed_{spec.seed}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        runner.export(str(out_dir))
+        if spec.cells_mode == "targz":
+            _compress_seed_dir(out_dir)
 
     final = metrics_list[-1]
     return {
@@ -326,6 +352,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="Output directory root (default: runs/sweep)",
     )
     parser.add_argument(
+        "--cells", choices=("targz", "dir", "none"), default="targz",
+        help="Per-(cell, seed) dump format: 'targz' (default, one .tar.gz "
+             "per seed — compact), 'dir' (loose files), 'none' (skip; keep "
+             "only the aggregate CSVs).",
+    )
+    parser.add_argument(
         "--workers", type=int, default=0,
         help="Parallel worker count (default: cpu_count - 1; pass 1 for serial debugging)",
     )
@@ -371,6 +403,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 n_epochs=n_epochs,
                 steps_per_epoch=steps_per_epoch,
                 output_root=str(args.output),
+                cells_mode=args.cells,
             ))
 
     args.output.mkdir(parents=True, exist_ok=True)

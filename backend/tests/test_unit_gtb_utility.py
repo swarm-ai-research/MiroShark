@@ -240,6 +240,21 @@ def test_saez_elasticity_estimate_updates_and_stays_bounded():
     assert 0.05 <= planner.elasticity_estimate <= 2.0
 
 
+def test_saez_welfare_weight_lowers_optimal_rate():
+    """bd-5gz: a positive social welfare weight g on the top tail lowers the
+    optimal Saez rate vs the g=0 (revenue-maximizing) limit. With a fat tail
+    the revenue-max rule raises the top rate; a high g flips it to a cut."""
+    rev_max = _saez_planner(top_rate=0.5)
+    b0 = rev_max.update({"top_threshold": 50.0, "top_mean_income": 200.0})
+
+    welfare = _saez_planner(top_rate=0.5)
+    bg = welfare.update({
+        "top_threshold": 50.0, "top_mean_income": 200.0,
+        "top_welfare_weight": 0.7,
+    })
+    assert bg[-1].rate < b0[-1].rate
+
+
 def test_saez_targets_highest_populated_bracket():
     """bd-anv/bd-kk5: when z* (the realized top-tail cutoff) sits below the
     configured top bracket, Saez must optimize the highest *populated*

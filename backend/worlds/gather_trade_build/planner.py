@@ -264,12 +264,20 @@ class PlannerAgent:
         self._prev_top_income = zm if zm > 0 else self._prev_top_income
         self._prev_net_of_tax = net_of_tax
 
-        # Inverse-elasticity rule for the top rate
+        # Welfare-weighted inverse-elasticity rule for the top rate:
+        #   tau* = (1 - g) / (1 - g + a*e)
+        # g is the marginal social welfare weight on the top tail (see
+        # env._aggregate_stats). g=0 recovers the revenue-maximizing
+        # Saez rate 1/(1 + a*e); g>0 lowers the optimal rate so the
+        # planner stops over-taxing for revenue the welfare objective
+        # doesn't reward. Absent (e.g. unit tests injecting bare stats) ->
+        # g=0, preserving the classic formula. (bd-5gz)
+        g = max(0.0, min(0.99, stats.get("top_welfare_weight", 0.0)))
         if zm > z_star > 0:
             pareto_a = zm / (zm - z_star) if zm > z_star else 2.0
         else:
             pareto_a = 2.0  # thin/no top tail observed: conservative default
-        tau_star = 1.0 / (1.0 + pareto_a * self._elasticity)
+        tau_star = (1.0 - g) / ((1.0 - g) + pareto_a * self._elasticity)
 
         cap = self._config.saez_rate_change_cap
         delta = max(-cap, min(cap, tau_star - top.rate))

@@ -1517,6 +1517,28 @@ class GTBEnvironment:
             sum(top_incomes) / len(top_incomes) if top_incomes else 0.0
         )
 
+        # Marginal social welfare weight on the top tail, for a
+        # welfare-weighted Saez rate tau* = (1-g)/(1-g + a*e) instead of
+        # the revenue-maximizing g=0 limit 1/(1+a*e). Under the world's
+        # CRRA utility the social value of a marginal coin to worker i is
+        # u'(c_i) = c_i^(-eta); g normalizes the top tail's mean weight by
+        # the population mean. g -> 0 means society places ~no value on top
+        # earners' marginal consumption (revenue-max, taxes hard); g -> 1
+        # means it values them like the average worker (no redistributive
+        # case, taxes lightly). This lets Saez optimize toward the
+        # configured welfare objective rather than pure revenue (bd-5gz).
+        from worlds.gather_trade_build.reward import crra_marginal
+        eta = self._config.utility.eta
+        top_indices = [i for i, inc in enumerate(incomes) if inc >= top_threshold]
+        if len(top_indices) >= 2:
+            mu = [crra_marginal(c, eta) for c in coins]
+            mean_mu = (sum(mu) / n) or 1.0
+            top_welfare_weight = (
+                sum(mu[i] for i in top_indices) / len(top_indices)
+            ) / mean_mu
+        else:
+            top_welfare_weight = 0.0
+
         return {
             "total_income": total_income,
             "mean_income": mean_income,
@@ -1530,6 +1552,7 @@ class GTBEnvironment:
             "n_frozen": len(self._frozen_agents),
             "top_threshold": top_threshold,
             "top_mean_income": top_mean_income,
+            "top_welfare_weight": top_welfare_weight,
             "n_top": float(len(top_incomes)),
         }
 

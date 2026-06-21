@@ -1490,10 +1490,29 @@ class GTBEnvironment:
             sum(compute_isoelastic_utility(w, self._config.utility) for w in ws) / n
         )
 
-        # Top-bracket stats for the Saez planner
+        # Top-tail stats for the Saez planner. z* is the income threshold
+        # above which the top marginal rate applies — normally the top
+        # bracket edge. But when the scenario's top bracket sits above the
+        # economy's realized income scale (gridworld per-epoch incomes are
+        # single digits while a top-bracket edge may be 50), NO worker ever
+        # lands in the top bracket, so top_mean_income is 0 every epoch.
+        # That silently breaks the Saez planner: with zm==0 the online
+        # elasticity estimate never updates (it is guarded on zm>0) and the
+        # inverse-elasticity rule collapses to a constant tau*=0.5 target,
+        # blind to the workforce (bd-kk5). Fall back to the observed top
+        # quintile so the planner always sees a real tail of >=2 earners to
+        # estimate the Pareto shape and elasticity from. Divergence from the
+        # vendored kernel; documented per CLAUDE.md.
         thresholds = self._tax_schedule.bracket_thresholds
         top_threshold = thresholds[-1] if thresholds else 0.0
         top_incomes = [inc for inc in incomes if inc >= top_threshold]
+        if len(top_incomes) < 2 and len(incomes) >= 2:
+            ordered = sorted(incomes)
+            cutoff = ordered[int(0.8 * len(ordered))]  # ~top quintile edge
+            data_top = [inc for inc in incomes if inc >= cutoff]
+            if len(data_top) >= 2:
+                top_threshold = cutoff
+                top_incomes = data_top
         top_mean_income = (
             sum(top_incomes) / len(top_incomes) if top_incomes else 0.0
         )

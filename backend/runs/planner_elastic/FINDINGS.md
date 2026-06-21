@@ -99,7 +99,28 @@ and nothing else — at every elasticity.
   `labor_coeff` change into a meaningfully different top rate (its welfare and
   revenue track heuristic at every level) — worth a dedicated look.
 
-## Follow-ups worth filing
+## Resolution of the Saez audit (bd-kk5)
+
+The flagged suspicion was correct — it **was a planner bug**, now fixed.
+`env._aggregate_stats` computed the Saez top tail from the configured top
+**bracket** threshold (50.0), but realized per-epoch income in this economy
+plateaus at ~9, so **no worker ever reaches the top bracket**: `top_mean_income`
+was `0.0` every epoch. That permanently froze the online elasticity estimate
+(guarded on `zm > 0`) and collapsed the inverse-elasticity rule to a constant
+`tau* = 0.5` target — identical at every `labor_coeff` (trace confirmed).
+
+**Fix:** when the configured top bracket holds < 2 earners, fall back to the
+observed top quintile so the planner always sees a real tail. Post-fix, Saez's
+elasticity estimate is live and **does respond to `labor_coeff`** (e ≈ 1.01 /
+0.72 / 1.16 across the levels).
+
+**Does this change the headline? No.** Re-running the bd-cjx benchmark post-fix,
+Saez is still bit-identical to bandit on welfare/Gini/production. The reason is
+now understood and *deeper* than a bug: Saez only adjusts the **top bracket's**
+rate, and this economy never populates the top bracket, so its lever is
+structurally disconnected from welfare regardless of how well-tuned it is. The
+"planners don't separate" conclusion stands — but now via a *correctly
+functioning* Saez rather than a silently broken one.
 
 - **Force schedule divergence.** The real blocker is convergent planner
   schedules. Re-run with planners seeded to *different* starting schedules, or

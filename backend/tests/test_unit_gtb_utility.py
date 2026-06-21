@@ -238,3 +238,35 @@ def test_saez_elasticity_estimate_updates_and_stays_bounded():
     for zm in (60.0, 80.0, 70.0, 90.0):
         planner.update({"top_threshold": 50.0, "top_mean_income": zm})
     assert 0.05 <= planner.elasticity_estimate <= 2.0
+
+
+def test_saez_top_tail_falls_back_when_top_bracket_unpopulated():
+    """bd-kk5: when the configured top bracket sits above the economy's
+    realized income scale, no worker reaches it and top_mean_income would
+    be 0 every epoch — silently freezing the Saez elasticity estimate and
+    collapsing it to a constant tau* controller. The env must fall back to
+    the observed top quintile so the planner always sees a real tail."""
+    from worlds.gather_trade_build.config import GTBConfig
+    from worlds.gather_trade_build.env import GTBEnvironment
+
+    cfg = GTBConfig.from_dict({
+        "taxation": {"brackets": [
+            {"threshold": 0.0, "rate": 0.1},
+            {"threshold": 50.0, "rate": 0.45},  # unreachable in this economy
+        ]},
+    })
+    env = GTBEnvironment(cfg)
+    # Incomes 0..9 — every worker is far below the 50.0 top-bracket edge.
+    workers = {}
+    for i in range(10):
+        w = WorkerState(agent_id=f"w{i}")
+        w.gross_income_this_epoch = float(i)
+        workers[f"w{i}"] = w
+
+    stats = env.stats_from_snapshot(workers)
+
+    # Pre-fix this was 0.0 (empty top bracket); post-fix it reflects the
+    # observed top quintile, with a cutoff below the unreachable bracket.
+    assert stats["top_mean_income"] > 0.0
+    assert stats["top_threshold"] < 50.0
+    assert stats["n_top"] >= 2

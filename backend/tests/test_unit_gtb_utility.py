@@ -240,6 +240,32 @@ def test_saez_elasticity_estimate_updates_and_stays_bounded():
     assert 0.05 <= planner.elasticity_estimate <= 2.0
 
 
+def test_heuristic_and_bandit_never_emit_non_monotone_schedule():
+    """bd-njq: heuristic pushes top brackets *down* when Gini<0.3 and
+    production is healthy, which could drive a top rate below the bracket
+    beneath it -> TaxSchedule._validate ValueError mid-run. bandit perturbs
+    randomly with the same exposure. Both must floor to monotone first."""
+    # Low Gini + healthy production + a large learning rate drives the
+    # heuristic into the non-monotone regime in a single step.
+    low_gini_high_prod = {"gini": 0.0, "mean_income": 20.0}
+
+    for ptype in ("heuristic", "bandit"):
+        schedule = TaxSchedule(TaxScheduleConfig(brackets=[
+            TaxBracket(threshold=0.0, rate=0.1),
+            TaxBracket(threshold=10.0, rate=0.5),
+            TaxBracket(threshold=25.0, rate=0.5),
+        ]))
+        planner = PlannerAgent(
+            PlannerConfig(planner_type=ptype, learning_rate=0.2,
+                          exploration_rate=1.0),
+            schedule, seed=1,
+        )
+        for _ in range(20):
+            brackets = planner.update(low_gini_high_prod)  # must not raise
+            rates = [b.rate for b in brackets]
+            assert rates == sorted(rates), f"{ptype} emitted non-monotone {rates}"
+
+
 def test_saez_welfare_weight_lowers_optimal_rate():
     """bd-5gz: a positive social welfare weight g on the top tail lowers the
     optimal Saez rate vs the g=0 (revenue-maximizing) limit. With a fat tail

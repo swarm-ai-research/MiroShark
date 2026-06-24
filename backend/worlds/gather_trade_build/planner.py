@@ -145,6 +145,27 @@ class PlannerAgent:
             - self._config.ineq_weight * self._gini(stats)
         )
 
+    def _enforce_monotone(self, brackets: List[TaxBracket]) -> List[TaxBracket]:
+        """Floor each bracket's rate at the bracket below it (forward pass).
+
+        ``TaxSchedule.update_brackets`` runs ``_validate``, which raises if a
+        bracket rate dips below its predecessor while ``allow_non_monotone``
+        is False. The heuristic and bandit planners can produce such
+        schedules (e.g. heuristic pushes top brackets *down* when Gini < 0.3
+        and production is healthy; bandit perturbs randomly), which would
+        crash the run mid-epoch (bd-njq). Saez and RL already guard inline;
+        this is the shared form so every planner is protected. A no-op when
+        the schedule permits non-monotone rates.
+        """
+        if self._tax_schedule.allow_non_monotone:
+            return brackets
+        out = list(brackets)
+        for i in range(1, len(out)):
+            if out[i].rate < out[i - 1].rate:
+                out[i] = TaxBracket(threshold=out[i].threshold,
+                                    rate=out[i - 1].rate)
+        return out
+
     # ------------------------------------------------------------------
     # Planner types
     # ------------------------------------------------------------------
@@ -178,7 +199,7 @@ class PlannerAgent:
                 threshold=bracket.threshold, rate=new_rate,
             ))
 
-        self._tax_schedule.update_brackets(new_brackets)
+        self._tax_schedule.update_brackets(self._enforce_monotone(new_brackets))
         return self._tax_schedule.brackets
 
     def _bandit_update(self, stats: Dict[str, float]) -> List[TaxBracket]:
@@ -207,7 +228,7 @@ class PlannerAgent:
         else:
             new_brackets = list(current)
 
-        self._tax_schedule.update_brackets(new_brackets)
+        self._tax_schedule.update_brackets(self._enforce_monotone(new_brackets))
         return self._tax_schedule.brackets
 
     def _saez_update(self, stats: Dict[str, float]) -> List[TaxBracket]:

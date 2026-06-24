@@ -154,7 +154,8 @@ def main(argv=None) -> None:
     ap.add_argument("--output", type=Path, default=Path("runs/saez_band"))
     args = ap.parse_args(argv)
 
-    scenario = yaml.safe_load(open(SCENARIO))
+    with open(SCENARIO) as f:
+        scenario = yaml.safe_load(f)
     band = ([float(v) for v in args.band.split(",")] if args.band else list(DEFAULT_BAND))
 
     rows: List[Dict[str, float]] = []

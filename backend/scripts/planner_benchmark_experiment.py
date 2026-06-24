@@ -48,7 +48,8 @@ PANELS = (
 def _load(run_dir: Path) -> Dict[str, dict]:
     """Map planner_type -> its aggregate_final row."""
     path = run_dir / "aggregate_final.csv"
-    rows = list(csv.DictReader(path.open()))
+    with path.open() as f:
+        rows = list(csv.DictReader(f))
     by_planner: Dict[str, dict] = {}
     for r in rows:
         # The sweep prefixes the swept key with ``override_``.

@@ -42,7 +42,8 @@ PANELS = (("welfare", "welfare (eq_times_prod)", True),
 
 def _load(run_dir: Path):
     """Return (sorted labor_coeff list, {planner: {lc: {metric_stat: val}}})."""
-    rows = list(csv.DictReader((run_dir / "aggregate_final.csv").open()))
+    with (run_dir / "aggregate_final.csv").open() as f:
+        rows = list(csv.DictReader(f))
     lcs = sorted({float(r["override_utility.labor_coeff"]) for r in rows})
     data: Dict[str, Dict[float, dict]] = {p: {} for p in PLANNERS}
     for r in rows:

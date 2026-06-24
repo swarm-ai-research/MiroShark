@@ -145,6 +145,27 @@ class PlannerAgent:
             - self._config.ineq_weight * self._gini(stats)
         )
 
+    def _enforce_monotone(self, brackets: List[TaxBracket]) -> List[TaxBracket]:
+        """Floor each bracket's rate at the bracket below it (forward pass).
+
+        ``TaxSchedule.update_brackets`` runs ``_validate``, which raises if a
+        bracket rate dips below its predecessor while ``allow_non_monotone``
+        is False. The heuristic and bandit planners can produce such
+        schedules (e.g. heuristic pushes top brackets *down* when Gini < 0.3
+        and production is healthy; bandit perturbs randomly), which would
+        crash the run mid-epoch (bd-njq). Saez and RL already guard inline;
+        this is the shared form so every planner is protected. A no-op when
+        the schedule permits non-monotone rates.
+        """
+        if self._tax_schedule.allow_non_monotone:
+            return brackets
+        out = list(brackets)
+        for i in range(1, len(out)):
+            if out[i].rate < out[i - 1].rate:
+                out[i] = TaxBracket(threshold=out[i].threshold,
+                                    rate=out[i - 1].rate)
+        return out
+
     # ------------------------------------------------------------------
     # Planner types
     # ------------------------------------------------------------------
@@ -178,7 +199,7 @@ class PlannerAgent:
                 threshold=bracket.threshold, rate=new_rate,
             ))
 
-        self._tax_schedule.update_brackets(new_brackets)
+        self._tax_schedule.update_brackets(self._enforce_monotone(new_brackets))
         return self._tax_schedule.brackets
 
     def _bandit_update(self, stats: Dict[str, float]) -> List[TaxBracket]:
@@ -207,7 +228,7 @@ class PlannerAgent:
         else:
             new_brackets = list(current)
 
-        self._tax_schedule.update_brackets(new_brackets)
+        self._tax_schedule.update_brackets(self._enforce_monotone(new_brackets))
         return self._tax_schedule.brackets
 
     def _saez_update(self, stats: Dict[str, float]) -> List[TaxBracket]:
@@ -228,9 +249,22 @@ class PlannerAgent:
         current = self._tax_schedule.brackets
         if not current:
             return current
-        top = current[-1]
-        z_star = stats.get("top_threshold", top.threshold)
+        z_star = stats.get("top_threshold", current[-1].threshold)
         zm = stats.get("top_mean_income", 0.0)
+
+        # Target the highest bracket the top tail actually occupies — the
+        # bracket whose threshold sits at or below z* (the income cutoff
+        # defining the top group). On economies whose configured top
+        # bracket sits above the realized income scale that bracket is
+        # empty, so optimizing its rate is welfare-inert; the live lever is
+        # the highest *populated* bracket (bd-anv/bd-kk5). z*/zm are made
+        # data-driven in env._aggregate_stats so this index is meaningful
+        # even when no worker reaches the configured top bracket.
+        top_idx = 0
+        for idx in range(len(current)):
+            if current[idx].threshold <= z_star:
+                top_idx = idx
+        top = current[top_idx]
         net_of_tax = max(1e-6, 1.0 - top.rate)
 
         # Online elasticity estimate from the observed response
@@ -251,35 +285,52 @@ class PlannerAgent:
         self._prev_top_income = zm if zm > 0 else self._prev_top_income
         self._prev_net_of_tax = net_of_tax
 
-        # Inverse-elasticity rule for the top rate
+        # Welfare-weighted inverse-elasticity rule for the top rate:
+        #   tau* = (1 - g) / (1 - g + a*e)
+        # g is the marginal social welfare weight on the top tail (see
+        # env._aggregate_stats). g=0 recovers the revenue-maximizing
+        # Saez rate 1/(1 + a*e); g>0 lowers the optimal rate so the
+        # planner stops over-taxing for revenue the welfare objective
+        # doesn't reward. Absent (e.g. unit tests injecting bare stats) ->
+        # g=0, preserving the classic formula. (bd-5gz)
+        g = max(0.0, min(0.99, stats.get("top_welfare_weight", 0.0)))
         if zm > z_star > 0:
             pareto_a = zm / (zm - z_star) if zm > z_star else 2.0
         else:
             pareto_a = 2.0  # thin/no top tail observed: conservative default
-        tau_star = 1.0 / (1.0 + pareto_a * self._elasticity)
+        tau_star = (1.0 - g) / ((1.0 - g) + pareto_a * self._elasticity)
 
         cap = self._config.saez_rate_change_cap
         delta = max(-cap, min(cap, tau_star - top.rate))
         new_top_rate = max(0.0, min(1.0, top.rate + delta))
 
-        new_brackets = [
-            TaxBracket(threshold=b.threshold, rate=b.rate) for b in current[:-1]
-        ]
-        new_brackets.append(TaxBracket(threshold=top.threshold, rate=new_top_rate))
+        # Set the optimized rate on the targeted bracket; brackets below it
+        # are untouched (standard top-rate result).
+        new_brackets = [TaxBracket(threshold=b.threshold, rate=b.rate)
+                        for b in current]
+        new_brackets[top_idx] = TaxBracket(threshold=top.threshold,
+                                           rate=new_top_rate)
 
-        # A capped move toward tau* can dip the top rate below the bracket
-        # under it while non-monotone schedules are disallowed; floor it.
-        if not self._tax_schedule.allow_non_monotone and len(new_brackets) > 1:
-            floor = new_brackets[-2].rate
-            if new_brackets[-1].rate < floor:
-                new_brackets[-1] = TaxBracket(
-                    threshold=new_brackets[-1].threshold, rate=floor,
+        if not self._tax_schedule.allow_non_monotone:
+            # Floor the targeted bracket against the one below it.
+            if top_idx > 0 and new_brackets[top_idx].rate < new_brackets[top_idx - 1].rate:
+                new_top_rate = new_brackets[top_idx - 1].rate
+                new_brackets[top_idx] = TaxBracket(
+                    threshold=top.threshold, rate=new_top_rate,
                 )
+            # Carry the top rate up through any (empty) higher brackets so
+            # the schedule stays monotone — a single top rate above z*.
+            for k in range(top_idx + 1, len(new_brackets)):
+                if new_brackets[k].rate < new_brackets[k - 1].rate:
+                    new_brackets[k] = TaxBracket(
+                        threshold=new_brackets[k].threshold,
+                        rate=new_brackets[k - 1].rate,
+                    )
 
         self._tax_schedule.update_brackets(new_brackets)
         logger.debug(
-            "Saez update: e=%.3f a=%.3f tau*=%.3f -> top rate %.3f",
-            self._elasticity, pareto_a, tau_star, new_top_rate,
+            "Saez update: idx=%d e=%.3f a=%.3f tau*=%.3f -> rate %.3f",
+            top_idx, self._elasticity, pareto_a, tau_star, new_top_rate,
         )
         return self._tax_schedule.brackets
 

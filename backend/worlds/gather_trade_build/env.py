@@ -1490,13 +1490,54 @@ class GTBEnvironment:
             sum(compute_isoelastic_utility(w, self._config.utility) for w in ws) / n
         )
 
-        # Top-bracket stats for the Saez planner
+        # Top-tail stats for the Saez planner. z* is the income threshold
+        # above which the top marginal rate applies — normally the top
+        # bracket edge. But when the scenario's top bracket sits above the
+        # economy's realized income scale (gridworld per-epoch incomes are
+        # single digits while a top-bracket edge may be 50), NO worker ever
+        # lands in the top bracket, so top_mean_income is 0 every epoch.
+        # That silently breaks the Saez planner: with zm==0 the online
+        # elasticity estimate never updates (it is guarded on zm>0) and the
+        # inverse-elasticity rule collapses to a constant tau*=0.5 target,
+        # blind to the workforce (bd-kk5). Fall back to the observed top
+        # quintile so the planner always sees a real tail of >=2 earners to
+        # estimate the Pareto shape and elasticity from. Divergence from the
+        # vendored kernel; documented per CLAUDE.md.
         thresholds = self._tax_schedule.bracket_thresholds
         top_threshold = thresholds[-1] if thresholds else 0.0
         top_incomes = [inc for inc in incomes if inc >= top_threshold]
+        if len(top_incomes) < 2 and len(incomes) >= 2:
+            ordered = sorted(incomes)
+            cutoff = ordered[int(0.8 * len(ordered))]  # ~top quintile edge
+            data_top = [inc for inc in incomes if inc >= cutoff]
+            if len(data_top) >= 2:
+                top_threshold = cutoff
+                top_incomes = data_top
         top_mean_income = (
             sum(top_incomes) / len(top_incomes) if top_incomes else 0.0
         )
+
+        # Marginal social welfare weight on the top tail, for a
+        # welfare-weighted Saez rate tau* = (1-g)/(1-g + a*e) instead of
+        # the revenue-maximizing g=0 limit 1/(1+a*e). Under the world's
+        # CRRA utility the social value of a marginal coin to worker i is
+        # u'(c_i) = c_i^(-eta); g normalizes the top tail's mean weight by
+        # the population mean. g -> 0 means society places ~no value on top
+        # earners' marginal consumption (revenue-max, taxes hard); g -> 1
+        # means it values them like the average worker (no redistributive
+        # case, taxes lightly). This lets Saez optimize toward the
+        # configured welfare objective rather than pure revenue (bd-5gz).
+        from worlds.gather_trade_build.reward import crra_marginal
+        eta = self._config.utility.eta
+        top_indices = [i for i, inc in enumerate(incomes) if inc >= top_threshold]
+        if len(top_indices) >= 2:
+            mu = [crra_marginal(c, eta) for c in coins]
+            mean_mu = (sum(mu) / n) or 1.0
+            top_welfare_weight = (
+                sum(mu[i] for i in top_indices) / len(top_indices)
+            ) / mean_mu
+        else:
+            top_welfare_weight = 0.0
 
         return {
             "total_income": total_income,
@@ -1511,6 +1552,7 @@ class GTBEnvironment:
             "n_frozen": len(self._frozen_agents),
             "top_threshold": top_threshold,
             "top_mean_income": top_mean_income,
+            "top_welfare_weight": top_welfare_weight,
             "n_top": float(len(top_incomes)),
         }
 

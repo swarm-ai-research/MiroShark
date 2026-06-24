@@ -238,3 +238,90 @@ def test_saez_elasticity_estimate_updates_and_stays_bounded():
     for zm in (60.0, 80.0, 70.0, 90.0):
         planner.update({"top_threshold": 50.0, "top_mean_income": zm})
     assert 0.05 <= planner.elasticity_estimate <= 2.0
+
+
+def test_heuristic_and_bandit_never_emit_non_monotone_schedule():
+    """bd-njq: heuristic pushes top brackets *down* when Gini<0.3 and
+    production is healthy, which could drive a top rate below the bracket
+    beneath it -> TaxSchedule._validate ValueError mid-run. bandit perturbs
+    randomly with the same exposure. Both must floor to monotone first."""
+    # Low Gini + healthy production + a large learning rate drives the
+    # heuristic into the non-monotone regime in a single step.
+    low_gini_high_prod = {"gini": 0.0, "mean_income": 20.0}
+
+    for ptype in ("heuristic", "bandit"):
+        schedule = TaxSchedule(TaxScheduleConfig(brackets=[
+            TaxBracket(threshold=0.0, rate=0.1),
+            TaxBracket(threshold=10.0, rate=0.5),
+            TaxBracket(threshold=25.0, rate=0.5),
+        ]))
+        planner = PlannerAgent(
+            PlannerConfig(planner_type=ptype, learning_rate=0.2,
+                          exploration_rate=1.0),
+            schedule, seed=1,
+        )
+        for _ in range(20):
+            brackets = planner.update(low_gini_high_prod)  # must not raise
+            rates = [b.rate for b in brackets]
+            assert rates == sorted(rates), f"{ptype} emitted non-monotone {rates}"
+
+
+def test_saez_welfare_weight_lowers_optimal_rate():
+    """bd-5gz: a positive social welfare weight g on the top tail lowers the
+    optimal Saez rate vs the g=0 (revenue-maximizing) limit. With a fat tail
+    the revenue-max rule raises the top rate; a high g flips it to a cut."""
+    rev_max = _saez_planner(top_rate=0.5)
+    b0 = rev_max.update({"top_threshold": 50.0, "top_mean_income": 200.0})
+
+    welfare = _saez_planner(top_rate=0.5)
+    bg = welfare.update({
+        "top_threshold": 50.0, "top_mean_income": 200.0,
+        "top_welfare_weight": 0.7,
+    })
+    assert bg[-1].rate < b0[-1].rate
+
+
+def test_saez_targets_highest_populated_bracket():
+    """bd-anv/bd-kk5: when z* (the realized top-tail cutoff) sits below the
+    configured top bracket, Saez must optimize the highest *populated*
+    bracket (the one containing z*), not the empty top bracket."""
+    planner = _saez_planner(top_rate=0.45)  # schedule [0.0, 10.0, 50.0]
+    # z*=12 lands in the [10, 50) bracket (index 1); fat tail -> rate rises.
+    for _ in range(3):
+        brackets = planner.update({"top_threshold": 12.0, "top_mean_income": 200.0})
+    assert brackets[0].rate == pytest.approx(0.1)   # bottom bracket untouched
+    assert brackets[1].rate > 0.2                    # populated bracket optimized
+    # empty top bracket carried up so the schedule stays monotone
+    assert brackets[2].rate >= brackets[1].rate - 1e-9
+
+
+def test_saez_top_tail_falls_back_when_top_bracket_unpopulated():
+    """bd-kk5: when the configured top bracket sits above the economy's
+    realized income scale, no worker reaches it and top_mean_income would
+    be 0 every epoch — silently freezing the Saez elasticity estimate and
+    collapsing it to a constant tau* controller. The env must fall back to
+    the observed top quintile so the planner always sees a real tail."""
+    from worlds.gather_trade_build.config import GTBConfig
+    from worlds.gather_trade_build.env import GTBEnvironment
+
+    cfg = GTBConfig.from_dict({
+        "taxation": {"brackets": [
+            {"threshold": 0.0, "rate": 0.1},
+            {"threshold": 50.0, "rate": 0.45},  # unreachable in this economy
+        ]},
+    })
+    env = GTBEnvironment(cfg)
+    # Incomes 0..9 — every worker is far below the 50.0 top-bracket edge.
+    workers = {}
+    for i in range(10):
+        w = WorkerState(agent_id=f"w{i}")
+        w.gross_income_this_epoch = float(i)
+        workers[f"w{i}"] = w
+
+    stats = env.stats_from_snapshot(workers)
+
+    # Pre-fix this was 0.0 (empty top bracket); post-fix it reflects the
+    # observed top quintile, with a cutoff below the unreachable bracket.
+    assert stats["top_mean_income"] > 0.0
+    assert stats["top_threshold"] < 50.0
+    assert stats["n_top"] >= 2

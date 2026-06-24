@@ -52,6 +52,11 @@ class GTBAction:
     price: float = 1.0
     shift_amount: float = 0.0
     underreport_fraction: float = 0.0
+    # Commodity futures (bd-af2): for FUTURES_BUY/FUTURES_SELL the order
+    # reuses resource_type, quantity, and price (as the forward price) and
+    # targets this settlement epoch. 0 = unset / not a futures order. The
+    # matching book (bd-oo7) reads these; the bare env ignores them.
+    settlement_epoch: int = 0
     # Optional side-channel: place a YES/NO stake on an open prediction
     # market in the same tick. Env ignores these fields; the GTB world
     # service intercepts them after apply_actions and updates a separate

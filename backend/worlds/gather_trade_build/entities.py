@@ -27,6 +27,11 @@ class GTBActionType(Enum):
     # Strategic / adversarial actions
     SHIFT_INCOME = "shift_income"
     MISREPORT = "misreport"
+    # Commodity futures: go long / short a dated forward contract on a
+    # resource (bd-af2 first cut). FUTURES_BUY = long (agrees to buy at the
+    # forward price at settlement), FUTURES_SELL = short. See FuturesContract.
+    FUTURES_BUY = "futures_buy"
+    FUTURES_SELL = "futures_sell"
 
 
 class Direction(Enum):
@@ -73,6 +78,55 @@ class MarketOrder:
     # Persistent-book fields (market.order_ttl_steps > 0)
     expiry_step: int = 0  # step after which the order is cancelled
     escrowed_coin: float = 0.0  # buyer coin locked at post time
+
+
+@dataclass
+class FuturesContract:
+    """A matched dated forward contract on a resource (bd-af2 first cut).
+
+    One contract pairs a long (``long_agent_id``, agreed to buy ``qty`` of
+    ``resource_type`` at ``forward_price`` per unit at ``settlement_epoch``)
+    with a short (``short_agent_id``, the counterparty). Both sides escrow
+    margin at match time. The first cut is cash-settled at expiry: at
+    ``settlement_epoch`` the env transfers ``(spot - forward_price) * qty``
+    in coin from short to long (long profits if spot rose above the locked
+    forward), then releases both margins. ``status`` mirrors
+    ``gtb_markets.Market``: "open" until settled.
+
+    This dataclass is types-only (bd-e0t). The matching book (bd-oo7) mints
+    these; the settlement pass (bd-dog) resolves them.
+    """
+
+    contract_id: str
+    resource_type: ResourceType
+    qty: float
+    forward_price: float  # coins per unit, locked at match
+    settlement_epoch: int
+    long_agent_id: str
+    short_agent_id: str
+    margin_long: float = 0.0
+    margin_short: float = 0.0
+    status: str = "open"  # "open" | "settled"
+    created_epoch: int = 0
+    settled_epoch: Optional[int] = None
+    settle_spot_price: Optional[float] = None  # spot ref used at settlement
+
+    def to_dict(self) -> Dict:
+        return {
+            "contract_id": self.contract_id,
+            "resource_type": self.resource_type.value,
+            "qty": self.qty,
+            "forward_price": self.forward_price,
+            "settlement_epoch": self.settlement_epoch,
+            "long_agent_id": self.long_agent_id,
+            "short_agent_id": self.short_agent_id,
+            "margin_long": self.margin_long,
+            "margin_short": self.margin_short,
+            "status": self.status,
+            "created_epoch": self.created_epoch,
+            "settled_epoch": self.settled_epoch,
+            "settle_spot_price": self.settle_spot_price,
+        }
 
 
 @dataclass

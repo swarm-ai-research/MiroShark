@@ -212,3 +212,80 @@ def test_futures_disabled_ignores_orders():
     evs = env.apply_actions({"w0": _fut("w0", "long", 1.0, 1.0, 3)})
     assert env._futures_buy_orders == []
     assert any(e.details.get("reason") == "futures_disabled" for e in evs)
+
+
+# ----------------------------------------------------------------------
+# bd-dog: cash settlement at expiry
+# ----------------------------------------------------------------------
+
+def _total_coin(env):
+    return sum(w.get_resource(ResourceType.COIN) for w in env._workers.values())
+
+
+def _match_and_settle(env, spot, settle_epoch=1, long_px=1.2, short_px=1.0, qty=2.0):
+    """Post a crossing pair, set the spot reference, settle at expiry."""
+    env.apply_actions({
+        "w0": _fut("w0", "long", qty, long_px, settle_epoch),
+        "w1": _fut("w1", "short", qty, short_px, settle_epoch),
+    })
+    assert len(env._futures_contracts) == 1
+    if spot is not None:
+        env._last_trade_price["wood"] = spot
+    env._current_epoch = settle_epoch
+    env.end_epoch()
+    return env._futures_contracts[0]
+
+
+def test_settlement_long_profits_when_spot_above_forward():
+    env = _env()
+    w0b, w1b = _coin(env, "w0"), _coin(env, "w1")
+    c = _match_and_settle(env, spot=2.0)  # forward midpoint 1.1
+    assert c.status == "settled" and c.settled_epoch == 1
+    assert c.settle_spot_price == 2.0
+    pnl = (2.0 - 1.1) * 2.0  # 1.8 to long
+    # each side gets its margin back; long +pnl, short -pnl
+    assert _coin(env, "w0") == pytest.approx(w0b + pnl)
+    assert _coin(env, "w1") == pytest.approx(w1b - pnl)
+
+
+def test_settlement_short_profits_when_spot_below_forward():
+    env = _env()
+    w0b, w1b = _coin(env, "w0"), _coin(env, "w1")
+    c = _match_and_settle(env, spot=0.5)  # below forward 1.1
+    pnl = (0.5 - 1.1) * 2.0  # -1.2 (short wins)
+    assert _coin(env, "w0") == pytest.approx(w0b + pnl)   # long loses
+    assert _coin(env, "w1") == pytest.approx(w1b - pnl)   # short gains
+
+
+def test_settlement_no_spot_reference_is_zero_pnl():
+    env = _env()
+    w0b, w1b = _coin(env, "w0"), _coin(env, "w1")
+    c = _match_and_settle(env, spot=None)  # wood never traded spot
+    assert c.settle_spot_price == pytest.approx(c.forward_price)
+    assert _coin(env, "w0") == pytest.approx(w0b)  # margins back, no P&L
+    assert _coin(env, "w1") == pytest.approx(w1b)
+
+
+def test_settlement_conserves_total_coin():
+    for spot in (0.2, 1.1, 5.0):
+        env = _env()
+        before = _total_coin(env)
+        _match_and_settle(env, spot=spot)
+        assert _total_coin(env) == pytest.approx(before), f"spot={spot}"
+
+
+def test_settlement_never_drives_balance_negative():
+    env = _env()
+    before = _total_coin(env)  # 3 workers x 10 endowment
+    # Huge adverse move for the short: spot=50 on a forward ~1.1, qty 2 ->
+    # nominal P&L ~98, far beyond the short's ~10 coin. Must clamp.
+    _match_and_settle(env, spot=50.0)
+    assert _coin(env, "w1") >= 0.0
+    assert _total_coin(env) == pytest.approx(before)  # still conserved
+
+
+def test_open_futures_contracts_excludes_settled():
+    env = _env()
+    _match_and_settle(env, spot=1.5)
+    assert env.open_futures_contracts() == []
+    assert len(env._futures_contracts) == 1  # kept, marked settled

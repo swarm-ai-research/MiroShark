@@ -822,6 +822,79 @@ class GTBEnvironment:
         ))
         order.margin = 0.0
 
+    def open_futures_contracts(self) -> List[FuturesContract]:
+        """Contracts not yet settled (mirrors GTBMarketBook.open_markets)."""
+        return [c for c in self._futures_contracts if c.status == "open"]
+
+    def _settle_futures_contracts(self) -> List[GTBEvent]:
+        """Cash-settle every open contract whose settlement epoch arrived.
+
+        Deterministic: iterate in creation order. For each, the spot
+        reference is ``_last_trade_price`` for the resource (falls back to
+        the forward price — zero P&L — if the resource never traded spot,
+        so a futures-only run still settles cleanly). Then:
+
+        1. Return ``margin_long``/``margin_short`` to each side (restores
+           the coin escrowed at match — coin-neutral).
+        2. Transfer ``pnl = (spot - forward) * qty`` short->long (long
+           profits when spot rose above the locked forward). Pure zero-sum
+           transfer, clamped to the payer's available coin so no balance
+           goes negative (first cut has no margin-call/liquidation — that
+           is the deferred daily-MTM child). Records the realized P&L on
+           each side's ``cumulative_income`` symmetrically.
+
+        Coin is conserved: step 1 returns escrow, step 2 is a transfer.
+        """
+        events: List[GTBEvent] = []
+        for c in self._futures_contracts:
+            if c.status != "open" or c.settlement_epoch > self._current_epoch:
+                continue
+            long_w = self._workers.get(c.long_agent_id)
+            short_w = self._workers.get(c.short_agent_id)
+
+            # 1. Release margins (coin-neutral restore of escrow).
+            if long_w is not None and c.margin_long > 0:
+                long_w.add_resource(ResourceType.COIN, c.margin_long)
+            if short_w is not None and c.margin_short > 0:
+                short_w.add_resource(ResourceType.COIN, c.margin_short)
+
+            # 2. P&L transfer, clamped so no balance goes negative.
+            # ``realized`` is the long's signed P&L; the move is a pure
+            # zero-sum coin transfer between the two workers.
+            spot = self._last_trade_price.get(c.resource_type.value,
+                                              c.forward_price)
+            pnl = (spot - c.forward_price) * c.qty
+            realized = 0.0
+            if long_w is not None and short_w is not None:
+                if pnl >= 0:  # long wins, short pays (clamped to short's coin)
+                    transfer = min(pnl, short_w.get_resource(ResourceType.COIN))
+                    short_w.remove_resource(ResourceType.COIN, transfer)
+                    long_w.add_resource(ResourceType.COIN, transfer)
+                    realized = transfer
+                else:  # long loses, long pays short (clamped to long's coin)
+                    transfer = min(-pnl, long_w.get_resource(ResourceType.COIN))
+                    long_w.remove_resource(ResourceType.COIN, transfer)
+                    short_w.add_resource(ResourceType.COIN, transfer)
+                    realized = -transfer
+                long_w.cumulative_income += realized
+                short_w.cumulative_income -= realized
+
+            c.status = "settled"
+            c.settled_epoch = self._current_epoch
+            c.settle_spot_price = spot
+            c.margin_long = 0.0
+            c.margin_short = 0.0
+            events.append(GTBEvent(
+                event_type="futures_settled", step=self._current_step,
+                epoch=self._current_epoch, agent_id=c.long_agent_id,
+                details={"contract_id": c.contract_id,
+                         "resource": c.resource_type.value, "qty": c.qty,
+                         "forward_price": c.forward_price, "spot": spot,
+                         "pnl_long": realized, "long": c.long_agent_id,
+                         "short": c.short_agent_id},
+            ))
+        return events
+
     def _handle_shift_income(self, worker: WorkerState,
                               action: GTBAction) -> GTBEvent:
         cfg = self._config.gaming
@@ -1149,6 +1222,10 @@ class GTBEnvironment:
         # epoch has arrived unmatched (bd-oo7), before taxes.
         if self._config.market.futures_enabled:
             events.extend(self._refund_expired_futures_orders())
+            # 0a2. Cash-settle contracts reaching their settlement epoch
+            # (bd-dog): release margins + transfer (spot - forward)*qty
+            # short->long. Before the snapshot so settled coin is captured.
+            events.extend(self._settle_futures_contracts())
 
         # 0b. Stance-mode misreporting: derive reported income uniformly
         # from the declared fraction, before taxes are computed on it.

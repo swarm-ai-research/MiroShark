@@ -381,3 +381,17 @@ def test_hedger_spot_sells_inventory():
     act = pol.decide(obs)
     assert act.action_type == GTBActionType.TRADE_SELL
     assert act.resource_type == ResourceType.WOOD
+
+
+def test_basis_uses_nearest_dated_forward_not_insertion_order():
+    """Review fix: basis must use the front-month forward (smallest
+    settlement epoch), not whatever was printed last."""
+    env = _env()
+    env._current_epoch = 0
+    # Print a far-dated forward FIRST, then a near-dated one, so insertion
+    # order (far) differs from nearest-dated (near).
+    env._last_forward_price["wood@9"] = 2.0  # far
+    env._last_forward_price["wood@2"] = 1.3  # near (front month)
+    env._last_trade_price["wood"] = 1.0      # spot
+    # nearest-dated forward is wood@2 (1.3) -> basis 0.3, not 1.0
+    assert env.futures_summary()["basis"] == pytest.approx(0.3)

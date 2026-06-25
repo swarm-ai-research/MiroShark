@@ -835,12 +835,15 @@ class GTBEnvironment:
         bases = []
         for rt in (ResourceType.WOOD, ResourceType.STONE):
             spot = self._last_trade_price.get(rt.value)
-            forwards = [self._last_forward_price[k]
-                        for k in self._last_forward_price
-                        if k.startswith(f"{rt.value}@")]
-            if spot is not None and forwards:
-                # Use the nearest-dated forward print available for the basis.
-                bases.append(forwards[-1] - spot)
+            # Front-month basis: pick the nearest-dated forward print (the
+            # smallest settlement epoch), not dict-insertion order. The key
+            # encodes the date as ``<resource>@<epoch>``.
+            dated = [(int(k.split("@", 1)[1]), self._last_forward_price[k])
+                     for k in self._last_forward_price
+                     if k.startswith(f"{rt.value}@")]
+            if spot is not None and dated:
+                _, nearest_forward = min(dated, key=lambda d: d[0])
+                bases.append(nearest_forward - spot)
         basis = sum(bases) / len(bases) if bases else 0.0
         return {
             "open_interest": len(live),

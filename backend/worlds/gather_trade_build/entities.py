@@ -81,6 +81,28 @@ class MarketOrder:
 
 
 @dataclass
+class FuturesOrder:
+    """A resting futures limit order (bd-oo7).
+
+    A worker's standing offer to go long (``is_buy``) or short a dated
+    forward on ``resource_type``: ``qty`` units at ``forward_price`` per
+    unit, settling at ``settlement_epoch``. ``margin`` coin is escrowed at
+    post time (parallel to ``MarketOrder.escrowed_coin``) so a resting
+    order can always be honored when matched. Refunded if the order is
+    never matched by its settlement epoch.
+    """
+
+    agent_id: str
+    resource_type: ResourceType
+    qty: float
+    forward_price: float
+    settlement_epoch: int
+    is_buy: bool  # True = long, False = short
+    step: int = 0
+    margin: float = 0.0  # coin escrowed at post
+
+
+@dataclass
 class FuturesContract:
     """A matched dated forward contract on a resource (bd-af2 first cut).
 

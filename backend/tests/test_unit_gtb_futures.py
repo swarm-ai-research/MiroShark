@@ -11,16 +11,41 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+from worlds.gather_trade_build.config import GTBConfig  # noqa: E402
 from worlds.gather_trade_build.entities import (  # noqa: E402
     FuturesContract,
     GTBActionType,
     ResourceType,
 )
-from worlds.gather_trade_build.env import GTBAction  # noqa: E402
+from worlds.gather_trade_build.env import GTBAction, GTBEnvironment  # noqa: E402
+
+
+def _env(**market):
+    cfg = GTBConfig.from_dict({
+        "map": {"height": 3, "width": 3, "wood_density": 1.0,
+                "stone_density": 0.0},
+        "market": market,
+    })
+    env = GTBEnvironment(cfg)
+    for aid in ("w0", "w1", "w2"):
+        env.add_worker(aid)  # 10 coin endowment each
+    return env
+
+
+def _fut(agent, side, qty, price, settle, resource=ResourceType.WOOD):
+    at = GTBActionType.FUTURES_BUY if side == "long" else GTBActionType.FUTURES_SELL
+    return GTBAction(agent_id=agent, action_type=at, resource_type=resource,
+                     quantity=qty, price=price, settlement_epoch=settle)
+
+
+def _coin(env, aid):
+    return env._workers[aid].get_resource(ResourceType.COIN)
 
 
 def test_futures_action_types_exist():
@@ -83,3 +108,107 @@ def test_futures_contract_to_dict_round_trips_fields():
     assert d["long_agent_id"] == "w3" and d["short_agent_id"] == "w4"
     assert d["status"] == "open"
     assert d["settled_epoch"] is None
+
+
+# ----------------------------------------------------------------------
+# bd-oo7: futures order book + matching
+# ----------------------------------------------------------------------
+
+def test_crossing_pair_mints_one_contract_with_margin_escrowed():
+    env = _env()
+    c0, c1 = _coin(env, "w0"), _coin(env, "w1")
+    env.apply_actions({
+        "w0": _fut("w0", "long", 2.0, 1.2, 3),
+        "w1": _fut("w1", "short", 2.0, 1.0, 3),
+    })
+    assert len(env._futures_contracts) == 1
+    c = env._futures_contracts[0]
+    assert c.long_agent_id == "w0" and c.short_agent_id == "w1"
+    assert c.forward_price == pytest.approx(1.1)  # midpoint of 1.2/1.0
+    assert c.qty == 2.0 and c.status == "open"
+    # margin escrowed at each order's posted price (0.2 * qty * price)
+    assert c.margin_long == pytest.approx(0.2 * 2.0 * 1.2)
+    assert c.margin_short == pytest.approx(0.2 * 2.0 * 1.0)
+    assert _coin(env, "w0") == pytest.approx(c0 - 0.2 * 2.0 * 1.2)
+    assert _coin(env, "w1") == pytest.approx(c1 - 0.2 * 2.0 * 1.0)
+    # books cleared
+    assert env._futures_buy_orders == [] and env._futures_sell_orders == []
+
+
+def test_non_crossing_orders_rest_without_matching():
+    env = _env()
+    env.apply_actions({
+        "w0": _fut("w0", "long", 1.0, 0.9, 3),   # bid below
+        "w1": _fut("w1", "short", 1.0, 1.5, 3),  # ask above
+    })
+    assert env._futures_contracts == []
+    assert len(env._futures_buy_orders) == 1
+    assert len(env._futures_sell_orders) == 1
+    curve = env._futures_curve()["wood@3"]
+    assert curve["best_bid"] == 0.9 and curve["best_ask"] == 1.5
+
+
+def test_different_settlement_epochs_do_not_cross():
+    env = _env()
+    env.apply_actions({
+        "w0": _fut("w0", "long", 1.0, 1.5, 3),
+        "w1": _fut("w1", "short", 1.0, 1.0, 5),  # different delivery date
+    })
+    assert env._futures_contracts == []
+
+
+def test_self_match_skipped():
+    env = _env()
+    env.apply_actions({"w0": _fut("w0", "long", 1.0, 1.5, 3)})
+    env.apply_actions({"w0": _fut("w0", "short", 1.0, 1.0, 3)})
+    assert env._futures_contracts == []  # same agent can't trade with itself
+
+
+def test_settlement_must_be_in_future():
+    env = _env()
+    evs = env.apply_actions({"w0": _fut("w0", "long", 1.0, 1.0, 0)})
+    assert env._futures_buy_orders == []
+    assert any(e.event_type == "futures_order_fail"
+               and e.details.get("reason") == "settlement_not_in_future"
+               for e in evs)
+
+
+def test_insufficient_margin_rejected():
+    env = _env()
+    # margin = 0.2 * 100 * 1.0 = 20 > 10 endowment
+    evs = env.apply_actions({"w0": _fut("w0", "long", 100.0, 1.0, 3)})
+    assert env._futures_buy_orders == []
+    assert _coin(env, "w0") == pytest.approx(10.0)  # nothing escrowed
+    assert any(e.details.get("reason") == "insufficient_margin" for e in evs)
+
+
+def test_partial_fill_leaves_residual_resting():
+    env = _env()
+    env.apply_actions({
+        "w0": _fut("w0", "long", 3.0, 1.2, 3),
+        "w1": _fut("w1", "short", 1.0, 1.0, 3),
+    })
+    assert len(env._futures_contracts) == 1
+    assert env._futures_contracts[0].qty == 1.0
+    # 2 units of the long order still rest
+    assert len(env._futures_buy_orders) == 1
+    assert env._futures_buy_orders[0].qty == pytest.approx(2.0)
+
+
+def test_unmatched_order_margin_refunded_at_settlement_epoch():
+    env = _env()
+    c0 = _coin(env, "w0")
+    env.apply_actions({"w0": _fut("w0", "long", 1.0, 1.0, 1)})
+    assert _coin(env, "w0") < c0  # margin escrowed
+    # advance to the settlement epoch unmatched -> refund at epoch close
+    env._current_epoch = 1
+    env.end_epoch()
+    assert _coin(env, "w0") == pytest.approx(c0)  # fully refunded
+    assert env._futures_buy_orders == []
+
+
+def test_futures_disabled_ignores_orders():
+    env = _env(futures_enabled=False)
+    evs = env.apply_actions({"w0": _fut("w0", "long", 1.0, 1.0, 3)})
+    assert env._futures_buy_orders == []
+    assert any(e.details.get("reason") == "futures_disabled" for e in evs)

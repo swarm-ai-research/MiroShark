@@ -133,6 +133,12 @@ class MarketConfig:
     # at epoch close), with coin/resource escrowed at post time so
     # resting orders cannot be invalidated or spoofed.
     order_ttl_steps: int = 0
+    # Commodity futures (bd-af2). FUTURES_BUY/FUTURES_SELL orders rest on a
+    # separate book keyed by (resource, settlement_epoch) and match into
+    # cash-settled FuturesContracts. Each side escrows
+    # futures_margin_rate * notional in coin at post time.
+    futures_enabled: bool = True
+    futures_margin_rate: float = 0.2
 
 
 @dataclass
@@ -230,6 +236,7 @@ class GTBConfig:
             k: market_data[k] for k in (
                 "enabled", "transaction_fee_rate", "price_floor",
                 "price_ceiling", "order_ttl_steps",
+                "futures_enabled", "futures_margin_rate",
             ) if k in market_data
         })
 

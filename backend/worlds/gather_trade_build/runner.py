@@ -242,6 +242,9 @@ class GTBScenarioRunner:
                 house_value=(
                     self._config.build.wood_cost + self._config.build.stone_cost
                 ),
+                # Futures stock snapshot (bd-2qe); flows derive from events.
+                **{f"futures_{k}": v
+                   for k, v in self._env.futures_summary().items()},
             )
             self._epoch_metrics.append(metrics)
 

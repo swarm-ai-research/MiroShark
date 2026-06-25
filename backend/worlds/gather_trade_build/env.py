@@ -826,6 +826,28 @@ class GTBEnvironment:
         """Contracts not yet settled (mirrors GTBMarketBook.open_markets)."""
         return [c for c in self._futures_contracts if c.status == "open"]
 
+    def futures_summary(self) -> Dict[str, float]:
+        """Stock snapshot for metrics (bd-2qe): open interest, open notional,
+        and mean basis (forward - spot) over resources that have both a last
+        forward print and a last spot trade."""
+        live = self.open_futures_contracts()
+        open_notional = sum(c.qty * c.forward_price for c in live)
+        bases = []
+        for rt in (ResourceType.WOOD, ResourceType.STONE):
+            spot = self._last_trade_price.get(rt.value)
+            forwards = [self._last_forward_price[k]
+                        for k in self._last_forward_price
+                        if k.startswith(f"{rt.value}@")]
+            if spot is not None and forwards:
+                # Use the nearest-dated forward print available for the basis.
+                bases.append(forwards[-1] - spot)
+        basis = sum(bases) / len(bases) if bases else 0.0
+        return {
+            "open_interest": len(live),
+            "open_notional": open_notional,
+            "basis": basis,
+        }
+
     def _settle_futures_contracts(self) -> List[GTBEvent]:
         """Cash-settle every open contract whose settlement epoch arrived.
 

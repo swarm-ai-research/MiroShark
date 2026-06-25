@@ -289,3 +289,42 @@ def test_open_futures_contracts_excludes_settled():
     _match_and_settle(env, spot=1.5)
     assert env.open_futures_contracts() == []
     assert len(env._futures_contracts) == 1  # kept, marked settled
+
+
+# ----------------------------------------------------------------------
+# bd-2qe: futures metrics
+# ----------------------------------------------------------------------
+
+def test_metrics_surface_futures_volume_and_open_interest():
+    from worlds.gather_trade_build.metrics import compute_gtb_metrics
+    env = _env()
+    # match a 2-unit contract settling later (stays open this epoch)
+    env.apply_actions({
+        "w0": _fut("w0", "long", 2.0, 1.2, 5),
+        "w1": _fut("w1", "short", 2.0, 1.0, 5),
+    })
+    epoch_events = list(env._events)
+    summary = env.futures_summary()
+    assert summary["open_interest"] == 1
+    assert summary["open_notional"] == pytest.approx(2.0 * 1.1)
+    m = compute_gtb_metrics(
+        workers=env._workers, events=epoch_events, epoch=0,
+        bracket_thresholds=env.tax_schedule.bracket_thresholds,
+        **{f"futures_{k}": v for k, v in summary.items()},
+    )
+    assert m.futures_volume == pytest.approx(2.0)  # from futures_matched event
+    assert m.futures_open_interest == 1
+    assert m.futures_open_notional == pytest.approx(2.2)
+    d = m.to_dict()
+    assert d["futures_volume"] == pytest.approx(2.0)
+    assert d["futures_open_interest"] == 1
+
+
+def test_futures_basis_is_forward_minus_spot():
+    env = _env()
+    env.apply_actions({
+        "w0": _fut("w0", "long", 1.0, 1.4, 5),
+        "w1": _fut("w1", "short", 1.0, 1.0, 5),
+    })  # forward midpoint 1.2
+    env._last_trade_price["wood"] = 1.0  # spot
+    assert env.futures_summary()["basis"] == pytest.approx(0.2)  # 1.2 - 1.0

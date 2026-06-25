@@ -328,3 +328,56 @@ def test_futures_basis_is_forward_minus_spot():
     })  # forward midpoint 1.2
     env._last_trade_price["wood"] = 1.0  # spot
     assert env.futures_summary()["basis"] == pytest.approx(0.2)  # 1.2 - 1.0
+
+
+# ----------------------------------------------------------------------
+# bd-c7i: futures policies
+# ----------------------------------------------------------------------
+
+def test_maker_posts_alternating_two_sided_quotes():
+    from worlds.gather_trade_build.agents import FuturesMakerPolicy
+    pol = FuturesMakerPolicy("m", seed=1, horizon=3, spread=0.1)
+    long_act = pol.decide({"epoch": 0, "step": 0, "market_info": {}})
+    short_act = pol.decide({"epoch": 0, "step": 1, "market_info": {}})
+    assert long_act.action_type == GTBActionType.FUTURES_BUY
+    assert short_act.action_type == GTBActionType.FUTURES_SELL
+    assert long_act.settlement_epoch == 3
+    assert long_act.price < short_act.price  # bid below ask
+
+
+def test_taker_crosses_a_resting_quote():
+    from worlds.gather_trade_build.agents import FuturesTakerPolicy
+    pol = FuturesTakerPolicy("t", seed=1)
+    curve = {"wood@3": {"resource": "wood", "settlement_epoch": 3,
+                        "best_bid": None, "best_ask": 1.2,
+                        "last_forward": None}}
+    act = pol.decide({"futures_curve": curve})
+    assert act.action_type == GTBActionType.FUTURES_BUY  # lifts the ask
+    assert act.price == 1.2 and act.settlement_epoch == 3
+
+
+def test_taker_noop_when_no_quotes():
+    from worlds.gather_trade_build.agents import FuturesTakerPolicy
+    act = FuturesTakerPolicy("t", seed=1).decide({"futures_curve": {}})
+    assert act.action_type == GTBActionType.NOOP
+
+
+def test_hedger_shorts_on_cadence_only_when_enabled():
+    from worlds.gather_trade_build.agents import FuturesHedgerPolicy
+    obs = {"epoch": 0, "step": 4, "inventory": {}, "market_info": {}}
+    hedged = FuturesHedgerPolicy("h", seed=1, hedge=True, hedge_every=4)
+    assert hedged.decide(obs).action_type == GTBActionType.FUTURES_SELL
+    # unhedged control never posts a futures order
+    unhedged = FuturesHedgerPolicy("h", seed=1, hedge=False, hedge_every=4)
+    act = unhedged.decide(obs)
+    assert act.action_type != GTBActionType.FUTURES_SELL
+
+
+def test_hedger_spot_sells_inventory():
+    from worlds.gather_trade_build.agents import FuturesHedgerPolicy
+    pol = FuturesHedgerPolicy("h", seed=1, hedge=False)
+    obs = {"epoch": 0, "step": 1, "inventory": {"wood": 3.0},
+           "market_info": {"wood": {"last_price": 1.5}}}
+    act = pol.decide(obs)
+    assert act.action_type == GTBActionType.TRADE_SELL
+    assert act.resource_type == ResourceType.WOOD

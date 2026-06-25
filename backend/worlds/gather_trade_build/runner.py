@@ -116,6 +116,28 @@ def _create_policy(
             rate_threshold=agent_spec.get("rate_threshold", 0.30),
             effort_suppression=agent_spec.get("effort_suppression", 0.7),
         )
+    elif ptype == "futures_maker":
+        from worlds.gather_trade_build.agents import FuturesMakerPolicy
+        return FuturesMakerPolicy(
+            agent_id, seed=seed,
+            horizon=agent_spec.get("horizon", 3),
+            spread=agent_spec.get("spread", 0.1),
+            qty=agent_spec.get("qty", 1.0),
+        )
+    elif ptype == "futures_taker":
+        from worlds.gather_trade_build.agents import FuturesTakerPolicy
+        return FuturesTakerPolicy(
+            agent_id, seed=seed, qty=agent_spec.get("qty", 1.0),
+        )
+    elif ptype == "futures_hedger":
+        from worlds.gather_trade_build.agents import FuturesHedgerPolicy
+        return FuturesHedgerPolicy(
+            agent_id, seed=seed,
+            hedge=agent_spec.get("hedge", True),
+            horizon=agent_spec.get("horizon", 3),
+            hedge_qty=agent_spec.get("hedge_qty", 1.0),
+            hedge_every=agent_spec.get("hedge_every", 4),
+        )
     else:
         logger.warning("Unknown policy type '%s', defaulting to honest", ptype)
         return HonestWorkerPolicy(agent_id, seed=seed)

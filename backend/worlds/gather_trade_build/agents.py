@@ -688,3 +688,141 @@ class TaxAwareHonestPolicy(HonestWorkerPolicy):
                             )
                 return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
         return super().decide(obs)
+
+
+class FuturesMakerPolicy(GTBWorkerPolicy):
+    """Two-sided futures liquidity provider (bd-c7i).
+
+    Each step posts one resting forward quote on a single delivery date
+    (``epoch + horizon``), anchored to the current spot: a long (bid) at
+    ``spot * (1 - spread)`` on even steps, a short (ask) at
+    ``spot * (1 + spread)`` on odd steps. Over a few steps the book holds
+    a two-sided forward quote for takers/hedgers to cross. Does not gather
+    or build — a pure microstructure agent (parallel to MakerWorkerPolicy).
+    """
+
+    def __init__(self, agent_id: str, seed=None, horizon: int = 3,
+                 spread: float = 0.1, qty: float = 1.0,
+                 fair_value: float = 1.0) -> None:
+        super().__init__(agent_id, seed)
+        self._horizon = horizon
+        self._spread = spread
+        self._qty = qty
+        self._fair_value = fair_value
+
+    def _spot(self, obs: dict, resource: ResourceType) -> float:
+        info = (obs.get("market_info") or {}).get(resource.value) or {}
+        last = info.get("last_price")
+        return last if last and last > 0 else self._fair_value
+
+    def decide(self, obs: dict) -> GTBAction:
+        if obs.get("frozen"):
+            return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+        epoch = obs.get("epoch", 0)
+        step = obs.get("step", 0)
+        resource = ResourceType.WOOD if step % 4 < 2 else ResourceType.STONE
+        spot = self._spot(obs, resource)
+        settle = epoch + self._horizon
+        if step % 2 == 0:
+            return GTBAction(
+                agent_id=self.agent_id, action_type=GTBActionType.FUTURES_BUY,
+                resource_type=resource, quantity=self._qty,
+                price=spot * (1.0 - self._spread), settlement_epoch=settle,
+            )
+        return GTBAction(
+            agent_id=self.agent_id, action_type=GTBActionType.FUTURES_SELL,
+            resource_type=resource, quantity=self._qty,
+            price=spot * (1.0 + self._spread), settlement_epoch=settle,
+        )
+
+
+class FuturesTakerPolicy(GTBWorkerPolicy):
+    """Crosses resting forward quotes to generate matched contracts (bd-c7i).
+
+    Reads the forward curve in obs; lifts the best ask (goes long) or hits
+    the best bid (goes short) on whichever bucket has a quotable side,
+    pricing to cross. Picks a side at random when both exist so contracts
+    form on both directions. Pure microstructure (no gather/build)."""
+
+    def __init__(self, agent_id: str, seed=None, qty: float = 1.0) -> None:
+        super().__init__(agent_id, seed)
+        self._qty = qty
+
+    def decide(self, obs: dict) -> GTBAction:
+        if obs.get("frozen"):
+            return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+        curve = obs.get("futures_curve") or {}
+        liftable = [c for c in curve.values()
+                    if c.get("best_ask") is not None
+                    or c.get("best_bid") is not None]
+        if not liftable:
+            return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+        entry = self._rng.choice(liftable)
+        resource = ResourceType(entry["resource"])
+        settle = entry["settlement_epoch"]
+        ask, bid = entry.get("best_ask"), entry.get("best_bid")
+        # Choose a crossable side; prefer a random one when both exist.
+        go_long = ask is not None and (bid is None or self._rng.random() < 0.5)
+        if go_long:
+            return GTBAction(
+                agent_id=self.agent_id, action_type=GTBActionType.FUTURES_BUY,
+                resource_type=resource, quantity=self._qty,
+                price=ask, settlement_epoch=settle,
+            )
+        return GTBAction(
+            agent_id=self.agent_id, action_type=GTBActionType.FUTURES_SELL,
+            resource_type=resource, quantity=self._qty,
+            price=bid, settlement_epoch=settle,
+        )
+
+
+class FuturesHedgerPolicy(GTBWorkerPolicy):
+    """Spot-selling producer that optionally hedges with futures (bd-c7i).
+
+    A producer with genuine spot-price exposure: it gathers ``WOOD`` and
+    sells it on the spot market, so its revenue is ``spot * qty`` and
+    varies with the (volatile) spot price. With ``hedge=True`` it also
+    periodically shorts a forward at a price near spot — locking in a sale
+    price, so realized revenue tends toward ``forward * qty`` regardless of
+    where spot lands. With ``hedge=False`` it is the unhedged control:
+    same gather/spot-sell behavior, no futures. The bd-c7i validation runs
+    both arms side by side and compares revenue variance across seeds; the
+    toggle keeps the comparison apples-to-apples (the futures hedge is the
+    only difference).
+    """
+
+    def __init__(self, agent_id: str, seed=None, hedge: bool = True,
+                 horizon: int = 3, hedge_qty: float = 1.0,
+                 hedge_every: int = 4, fair_value: float = 1.0) -> None:
+        super().__init__(agent_id, seed)
+        self._hedge = hedge
+        self._horizon = horizon
+        self._hedge_qty = hedge_qty
+        self._hedge_every = hedge_every
+        self._fair_value = fair_value
+
+    def decide(self, obs: dict) -> GTBAction:
+        if obs.get("frozen"):
+            return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+        step = obs.get("step", 0)
+        inv = obs.get("inventory", {})
+        wood = inv.get(ResourceType.WOOD.value, 0.0)
+        info = (obs.get("market_info") or {}).get(ResourceType.WOOD.value) or {}
+        spot = info.get("last_price") or self._fair_value
+
+        # Hedge on a cadence (only when hedging is enabled).
+        if self._hedge and step > 0 and step % self._hedge_every == 0:
+            return GTBAction(
+                agent_id=self.agent_id, action_type=GTBActionType.FUTURES_SELL,
+                resource_type=ResourceType.WOOD, quantity=self._hedge_qty,
+                price=spot, settlement_epoch=obs.get("epoch", 0) + self._horizon,
+            )
+        # Spot-sell accumulated wood (the spot-priced revenue being hedged).
+        if wood >= 1.0:
+            return GTBAction(
+                agent_id=self.agent_id, action_type=GTBActionType.TRADE_SELL,
+                resource_type=ResourceType.WOOD, quantity=1.0,
+                price=max(0.1, spot * 0.95),  # cross down to ensure a sale
+            )
+        # Otherwise gather more wood to sell.
+        return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.GATHER)

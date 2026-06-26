@@ -10,6 +10,8 @@ from typing import Any, Dict, List
 from worlds.gather_trade_build.config import GTBConfig
 from worlds.gather_trade_build.entities import (
     Direction,
+    FuturesContract,
+    FuturesOrder,
     GTBActionType,
     GTBEvent,
     GTBGridCell,
@@ -52,6 +54,11 @@ class GTBAction:
     price: float = 1.0
     shift_amount: float = 0.0
     underreport_fraction: float = 0.0
+    # Commodity futures (bd-af2): for FUTURES_BUY/FUTURES_SELL the order
+    # reuses resource_type, quantity, and price (as the forward price) and
+    # targets this settlement epoch. 0 = unset / not a futures order. The
+    # matching book (bd-oo7) reads these; the bare env ignores them.
+    settlement_epoch: int = 0
     # Optional side-channel: place a YES/NO stake on an open prediction
     # market in the same tick. Env ignores these fields; the GTB world
     # service intercepts them after apply_actions and updates a separate
@@ -94,6 +101,15 @@ class GTBEnvironment:
         self._sell_orders: List[MarketOrder] = []
         self._last_trade_price: Dict[str, float] = {}
         self._volume_this_epoch: Dict[str, float] = {}
+
+        # Futures market (bd-af2): resting long/short orders, matched
+        # contracts, and last forward print per (resource, settlement_epoch).
+        self._futures_buy_orders: List[FuturesOrder] = []
+        self._futures_sell_orders: List[FuturesOrder] = []
+        self._futures_contracts: List[FuturesContract] = []
+        self._last_forward_price: Dict[str, float] = {}
+        self._futures_volume_this_epoch: Dict[str, float] = {}
+        self._futures_seq: int = 0
 
         # Events
         self._events: List[GTBEvent] = []
@@ -227,7 +243,41 @@ class GTBEnvironment:
             # within the same price. Empty lists if no orders on that
             # side. Policies that don't read the order book ignore this.
             "market_book": self._market_book_snapshot(),
+            # Forward curve: per (resource, settlement_epoch) best bid/ask
+            # and last forward print (bd-oo7). Empty when futures disabled.
+            "futures_curve": self._futures_curve(),
         }
+
+    def _futures_curve(self) -> Dict[str, Dict[str, Any]]:
+        """Forward-curve snapshot keyed by ``resource@settlement_epoch``.
+
+        Per bucket: best bid (highest long), best ask (lowest short), last
+        traded forward, and resting order counts. The basis vs spot
+        (forward - spot) is left to consumers, who have ``market_info``.
+        """
+        curve: Dict[str, Dict[str, Any]] = {}
+        keys = {
+            self._futures_key(o.resource_type, o.settlement_epoch)
+            for o in self._futures_buy_orders + self._futures_sell_orders
+        }
+        keys.update(self._last_forward_price.keys())
+        for key in keys:
+            res_val, _, settle_s = key.partition("@")
+            settle = int(settle_s) if settle_s else 0
+            bids = [o.forward_price for o in self._futures_buy_orders
+                    if self._futures_key(o.resource_type, o.settlement_epoch) == key]
+            asks = [o.forward_price for o in self._futures_sell_orders
+                    if self._futures_key(o.resource_type, o.settlement_epoch) == key]
+            curve[key] = {
+                "resource": res_val,
+                "settlement_epoch": settle,
+                "best_bid": max(bids) if bids else None,
+                "best_ask": min(asks) if asks else None,
+                "last_forward": self._last_forward_price.get(key),
+                "n_bids": len(bids),
+                "n_asks": len(asks),
+            }
+        return curve
 
     def _market_info(self) -> Dict[str, Any]:
         """Per-resource price discovery info: last trade price, best
@@ -315,6 +365,9 @@ class GTBEnvironment:
                 evt = self._handle_trade_buy(worker, action)
             elif action.action_type == GTBActionType.TRADE_SELL:
                 evt = self._handle_trade_sell(worker, action)
+            elif action.action_type in (GTBActionType.FUTURES_BUY,
+                                        GTBActionType.FUTURES_SELL):
+                evt = self._handle_futures_order(worker, action)
             elif action.action_type == GTBActionType.SHIFT_INCOME:
                 evt = self._handle_shift_income(worker, action)
             elif action.action_type == GTBActionType.MISREPORT:
@@ -337,6 +390,10 @@ class GTBEnvironment:
         # Match market orders
         trade_events = self._match_market_orders()
         step_events.extend(trade_events)
+
+        # Match futures orders (bd-oo7)
+        if self._config.market.futures_enabled:
+            step_events.extend(self._match_futures_orders())
 
         self._events.extend(step_events)
         self._current_step += 1
@@ -575,6 +632,293 @@ class GTBEnvironment:
             details={"side": "sell", "resource": action.resource_type.value,
                       "qty": action.quantity, "price": price},
         )
+
+    # ------------------------------------------------------------------
+    # Futures market (bd-af2 first cut)
+    # ------------------------------------------------------------------
+
+    def _handle_futures_order(self, worker: WorkerState,
+                              action: GTBAction) -> GTBEvent:
+        """Post a resting futures limit order (FUTURES_BUY=long / SELL=short).
+
+        Escrows ``futures_margin_rate * qty * forward_price`` in coin at
+        post time (both sides escrow coin — the first cut is cash-settled,
+        so the short need not hold the physical resource). Rejected if the
+        settlement epoch is not in the future or the worker can't fund the
+        margin.
+        """
+        is_buy = action.action_type == GTBActionType.FUTURES_BUY
+        if not self._config.market.futures_enabled:
+            return self._futures_fail(worker, "futures_disabled")
+        if worker.energy < self._config.energy_cost_trade:
+            return self._futures_fail(worker, "no_energy")
+        qty = max(0.0, action.quantity)
+        if qty <= 0:
+            return self._futures_fail(worker, "non_positive_qty")
+        if action.settlement_epoch <= self._current_epoch:
+            return self._futures_fail(worker, "settlement_not_in_future")
+        forward = max(self._config.market.price_floor,
+                      min(action.price, self._config.market.price_ceiling))
+        margin = self._config.market.futures_margin_rate * qty * forward
+        if worker.get_resource(ResourceType.COIN) < margin:
+            return self._futures_fail(worker, "insufficient_margin", margin)
+
+        worker.remove_resource(ResourceType.COIN, margin)
+        order = FuturesOrder(
+            agent_id=worker.agent_id,
+            resource_type=action.resource_type,
+            qty=qty,
+            forward_price=forward,
+            settlement_epoch=action.settlement_epoch,
+            is_buy=is_buy,
+            step=self._current_step,
+            margin=margin,
+        )
+        (self._futures_buy_orders if is_buy
+         else self._futures_sell_orders).append(order)
+        self._spend_energy(worker, self._config.energy_cost_trade)
+        return GTBEvent(
+            event_type="futures_order_placed", step=self._current_step,
+            epoch=self._current_epoch, agent_id=worker.agent_id,
+            details={"side": "long" if is_buy else "short",
+                     "resource": action.resource_type.value, "qty": qty,
+                     "forward_price": forward,
+                     "settlement_epoch": action.settlement_epoch},
+        )
+
+    def _futures_fail(self, worker: WorkerState, reason: str,
+                      required: float = 0.0) -> GTBEvent:
+        details: Dict[str, Any] = {"reason": reason}
+        if required:
+            details["required"] = required
+        return GTBEvent(
+            event_type="futures_order_fail", step=self._current_step,
+            epoch=self._current_epoch, agent_id=worker.agent_id,
+            details=details,
+        )
+
+    @staticmethod
+    def _futures_key(resource: ResourceType, settlement_epoch: int) -> str:
+        return f"{resource.value}@{settlement_epoch}"
+
+    def _match_futures_orders(self) -> List[GTBEvent]:
+        """Match crossing futures orders into FuturesContracts.
+
+        Grouped by (resource, settlement_epoch) — only orders for the same
+        delivery date are fungible. Highest-bid / lowest-ask first; forward
+        price is the midpoint of the crossing pair (mirrors the spot book).
+        Each match mints one open contract carrying both sides' escrowed
+        margin; settlement is bd-dog.
+        """
+        events: List[GTBEvent] = []
+        # Distinct (resource, settlement_epoch) buckets present on the book.
+        buckets = {
+            (o.resource_type, o.settlement_epoch)
+            for o in self._futures_buy_orders + self._futures_sell_orders
+        }
+        for resource, settle in buckets:
+            buys = sorted(
+                [o for o in self._futures_buy_orders
+                 if o.resource_type == resource
+                 and o.settlement_epoch == settle and o.qty > 1e-12],
+                key=lambda o: -o.forward_price,
+            )
+            sells = sorted(
+                [o for o in self._futures_sell_orders
+                 if o.resource_type == resource
+                 and o.settlement_epoch == settle and o.qty > 1e-12],
+                key=lambda o: o.forward_price,
+            )
+            bi, si = 0, 0
+            while bi < len(buys) and si < len(sells):
+                buy, sell = buys[bi], sells[si]
+                if buy.forward_price < sell.forward_price:
+                    break  # no more crosses in this bucket
+                if buy.agent_id == sell.agent_id:
+                    si += 1
+                    continue
+                qty = min(buy.qty, sell.qty)
+                if qty <= 0:
+                    bi += 1
+                    continue
+                forward = (buy.forward_price + sell.forward_price) / 2.0
+                # Move each side's pro-rata margin onto the contract.
+                m_long = buy.margin * (qty / buy.qty) if buy.qty > 0 else 0.0
+                m_short = sell.margin * (qty / sell.qty) if sell.qty > 0 else 0.0
+                buy.margin -= m_long
+                sell.margin -= m_short
+                self._futures_seq += 1
+                contract = FuturesContract(
+                    contract_id=f"fc-{self._futures_seq}",
+                    resource_type=resource,
+                    qty=qty,
+                    forward_price=forward,
+                    settlement_epoch=settle,
+                    long_agent_id=buy.agent_id,
+                    short_agent_id=sell.agent_id,
+                    margin_long=m_long,
+                    margin_short=m_short,
+                    created_epoch=self._current_epoch,
+                )
+                self._futures_contracts.append(contract)
+                buy.qty -= qty
+                sell.qty -= qty
+                key = self._futures_key(resource, settle)
+                self._last_forward_price[key] = forward
+                self._futures_volume_this_epoch[key] = (
+                    self._futures_volume_this_epoch.get(key, 0.0) + qty
+                )
+                events.append(GTBEvent(
+                    event_type="futures_matched", step=self._current_step,
+                    epoch=self._current_epoch, agent_id=buy.agent_id,
+                    details={"contract_id": contract.contract_id,
+                             "resource": resource.value, "qty": qty,
+                             "forward_price": forward,
+                             "settlement_epoch": settle,
+                             "long": buy.agent_id, "short": sell.agent_id},
+                ))
+                if buy.qty <= 1e-12:
+                    bi += 1
+                if sell.qty <= 1e-12:
+                    si += 1
+        # Drop fully-filled resting orders.
+        self._futures_buy_orders = [o for o in self._futures_buy_orders
+                                    if o.qty > 1e-12]
+        self._futures_sell_orders = [o for o in self._futures_sell_orders
+                                     if o.qty > 1e-12]
+        return events
+
+    def _refund_expired_futures_orders(self) -> List[GTBEvent]:
+        """Refund margin on resting futures orders whose settlement epoch
+        has arrived unmatched, so escrowed coin is not stranded. Matched
+        contracts are settled separately (bd-dog)."""
+        events: List[GTBEvent] = []
+        kept_buys, kept_sells = [], []
+        for order in self._futures_buy_orders:
+            if order.settlement_epoch <= self._current_epoch:
+                self._refund_futures_order(order, events)
+            else:
+                kept_buys.append(order)
+        for order in self._futures_sell_orders:
+            if order.settlement_epoch <= self._current_epoch:
+                self._refund_futures_order(order, events)
+            else:
+                kept_sells.append(order)
+        self._futures_buy_orders = kept_buys
+        self._futures_sell_orders = kept_sells
+        return events
+
+    def _refund_futures_order(self, order: FuturesOrder,
+                              events: List[GTBEvent]) -> None:
+        worker = self._workers.get(order.agent_id)
+        if worker is not None and order.margin > 0:
+            worker.add_resource(ResourceType.COIN, order.margin)
+        events.append(GTBEvent(
+            event_type="futures_order_expired", step=self._current_step,
+            epoch=self._current_epoch, agent_id=order.agent_id,
+            details={"resource": order.resource_type.value,
+                     "qty": order.qty, "refunded_margin": order.margin,
+                     "settlement_epoch": order.settlement_epoch},
+        ))
+        order.margin = 0.0
+
+    def open_futures_contracts(self) -> List[FuturesContract]:
+        """Contracts not yet settled (mirrors GTBMarketBook.open_markets)."""
+        return [c for c in self._futures_contracts if c.status == "open"]
+
+    def futures_summary(self) -> Dict[str, float]:
+        """Stock snapshot for metrics (bd-2qe): open interest, open notional,
+        and mean basis (forward - spot) over resources that have both a last
+        forward print and a last spot trade."""
+        live = self.open_futures_contracts()
+        open_notional = sum(c.qty * c.forward_price for c in live)
+        bases = []
+        for rt in (ResourceType.WOOD, ResourceType.STONE):
+            spot = self._last_trade_price.get(rt.value)
+            # Front-month basis: pick the nearest-dated forward print (the
+            # smallest settlement epoch), not dict-insertion order. The key
+            # encodes the date as ``<resource>@<epoch>``.
+            dated = [(int(k.split("@", 1)[1]), self._last_forward_price[k])
+                     for k in self._last_forward_price
+                     if k.startswith(f"{rt.value}@")]
+            if spot is not None and dated:
+                _, nearest_forward = min(dated, key=lambda d: d[0])
+                bases.append(nearest_forward - spot)
+        basis = sum(bases) / len(bases) if bases else 0.0
+        return {
+            "open_interest": len(live),
+            "open_notional": open_notional,
+            "basis": basis,
+        }
+
+    def _settle_futures_contracts(self) -> List[GTBEvent]:
+        """Cash-settle every open contract whose settlement epoch arrived.
+
+        Deterministic: iterate in creation order. For each, the spot
+        reference is ``_last_trade_price`` for the resource (falls back to
+        the forward price — zero P&L — if the resource never traded spot,
+        so a futures-only run still settles cleanly). Then:
+
+        1. Return ``margin_long``/``margin_short`` to each side (restores
+           the coin escrowed at match — coin-neutral).
+        2. Transfer ``pnl = (spot - forward) * qty`` short->long (long
+           profits when spot rose above the locked forward). Pure zero-sum
+           transfer, clamped to the payer's available coin so no balance
+           goes negative (first cut has no margin-call/liquidation — that
+           is the deferred daily-MTM child). Records the realized P&L on
+           each side's ``cumulative_income`` symmetrically.
+
+        Coin is conserved: step 1 returns escrow, step 2 is a transfer.
+        """
+        events: List[GTBEvent] = []
+        for c in self._futures_contracts:
+            if c.status != "open" or c.settlement_epoch > self._current_epoch:
+                continue
+            long_w = self._workers.get(c.long_agent_id)
+            short_w = self._workers.get(c.short_agent_id)
+
+            # 1. Release margins (coin-neutral restore of escrow).
+            if long_w is not None and c.margin_long > 0:
+                long_w.add_resource(ResourceType.COIN, c.margin_long)
+            if short_w is not None and c.margin_short > 0:
+                short_w.add_resource(ResourceType.COIN, c.margin_short)
+
+            # 2. P&L transfer, clamped so no balance goes negative.
+            # ``realized`` is the long's signed P&L; the move is a pure
+            # zero-sum coin transfer between the two workers.
+            spot = self._last_trade_price.get(c.resource_type.value,
+                                              c.forward_price)
+            pnl = (spot - c.forward_price) * c.qty
+            realized = 0.0
+            if long_w is not None and short_w is not None:
+                if pnl >= 0:  # long wins, short pays (clamped to short's coin)
+                    transfer = min(pnl, short_w.get_resource(ResourceType.COIN))
+                    short_w.remove_resource(ResourceType.COIN, transfer)
+                    long_w.add_resource(ResourceType.COIN, transfer)
+                    realized = transfer
+                else:  # long loses, long pays short (clamped to long's coin)
+                    transfer = min(-pnl, long_w.get_resource(ResourceType.COIN))
+                    long_w.remove_resource(ResourceType.COIN, transfer)
+                    short_w.add_resource(ResourceType.COIN, transfer)
+                    realized = -transfer
+                long_w.cumulative_income += realized
+                short_w.cumulative_income -= realized
+
+            c.status = "settled"
+            c.settled_epoch = self._current_epoch
+            c.settle_spot_price = spot
+            c.margin_long = 0.0
+            c.margin_short = 0.0
+            events.append(GTBEvent(
+                event_type="futures_settled", step=self._current_step,
+                epoch=self._current_epoch, agent_id=c.long_agent_id,
+                details={"contract_id": c.contract_id,
+                         "resource": c.resource_type.value, "qty": c.qty,
+                         "forward_price": c.forward_price, "spot": spot,
+                         "pnl_long": realized, "long": c.long_agent_id,
+                         "short": c.short_agent_id},
+            ))
+        return events
 
     def _handle_shift_income(self, worker: WorkerState,
                               action: GTBAction) -> GTBEvent:
@@ -898,6 +1242,15 @@ class GTBEnvironment:
         # BEFORE taxes, so locked coin is available for the tax bill.
         if self._config.market.order_ttl_steps > 0:
             events.extend(self._expire_orders(force_all=True))
+
+        # 0a. Futures: refund margin on resting orders whose settlement
+        # epoch has arrived unmatched (bd-oo7), before taxes.
+        if self._config.market.futures_enabled:
+            events.extend(self._refund_expired_futures_orders())
+            # 0a2. Cash-settle contracts reaching their settlement epoch
+            # (bd-dog): release margins + transfer (spot - forward)*qty
+            # short->long. Before the snapshot so settled coin is captured.
+            events.extend(self._settle_futures_contracts())
 
         # 0b. Stance-mode misreporting: derive reported income uniformly
         # from the declared fraction, before taxes are computed on it.

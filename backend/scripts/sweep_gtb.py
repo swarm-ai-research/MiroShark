@@ -75,6 +75,9 @@ _METRIC_FIELDS = (
     "total_catches",
     "bunching_intensity",
     "enforcement_cost",
+    "futures_volume",
+    "futures_open_interest",
+    "futures_basis",
 )
 
 

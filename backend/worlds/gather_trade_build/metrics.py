@@ -62,6 +62,12 @@ class GTBMetrics:
     total_trades: int = 0
     total_trade_volume: float = 0.0  # units of resources exchanged
 
+    # Futures market (bd-af2)
+    futures_volume: float = 0.0  # units contracted this epoch (matched)
+    futures_open_interest: int = 0  # live (unsettled) contracts
+    futures_open_notional: float = 0.0  # sum(qty * forward) of live contracts
+    futures_basis: float = 0.0  # mean(forward - spot) over priced resources
+
     # Bunching
     bunching_intensity: float = 0.0  # fraction of incomes within bin_width of thresholds
 
@@ -106,6 +112,10 @@ class GTBMetrics:
             "enforcement_cost": self.enforcement_cost,
             "total_trades": self.total_trades,
             "total_trade_volume": self.total_trade_volume,
+            "futures_volume": self.futures_volume,
+            "futures_open_interest": self.futures_open_interest,
+            "futures_open_notional": self.futures_open_notional,
+            "futures_basis": self.futures_basis,
             "bunching_intensity": self.bunching_intensity,
             "collusion_events_detected": self.collusion_events_detected,
             "collusion_suspicion_mean": self.collusion_suspicion_mean,
@@ -189,6 +199,11 @@ def compute_gtb_metrics(
     bin_width: float = 1.0,
     utility_config: Optional["UtilityConfig"] = None,
     house_value: float = 6.0,
+    # Futures stock snapshot from the env (bd-2qe); flows derive from
+    # events below. Defaulted so callers without futures pass nothing.
+    futures_open_interest: int = 0,
+    futures_open_notional: float = 0.0,
+    futures_basis: float = 0.0,
 ) -> GTBMetrics:
     """Compute all metrics for one epoch.
 
@@ -269,6 +284,12 @@ def compute_gtb_metrics(
     # Market activity
     trade_events = [e for e in events if e.event_type == "trade"]
     trade_volume = sum(e.details.get("quantity", 0.0) for e in trade_events)
+
+    # Futures volume is a flow — sum of qty matched this epoch (bd-2qe).
+    futures_volume = sum(
+        e.details.get("qty", 0.0)
+        for e in events if e.event_type == "futures_matched"
+    )
 
     # Bunching
     bunching = compute_bunching_intensity(incomes, bracket_thresholds, bin_width)
@@ -354,6 +375,10 @@ def compute_gtb_metrics(
         enforcement_cost=len(audit_events) * per_audit_cost,
         total_trades=len(trade_events),
         total_trade_volume=trade_volume,
+        futures_volume=futures_volume,
+        futures_open_interest=futures_open_interest,
+        futures_open_notional=futures_open_notional,
+        futures_basis=futures_basis,
         bunching_intensity=bunching,
         collusion_events_detected=len(collusion_events),
         collusion_suspicion_mean=mean_suspicion,

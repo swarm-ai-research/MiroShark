@@ -729,58 +729,57 @@ class GTBEnvironment:
                  and o.settlement_epoch == settle and o.qty > 1e-12],
                 key=lambda o: o.forward_price,
             )
-            bi, si = 0, 0
-            while bi < len(buys) and si < len(sells):
-                buy, sell = buys[bi], sells[si]
-                if buy.forward_price < sell.forward_price:
-                    break  # no more crosses in this bucket
-                if buy.agent_id == sell.agent_id:
-                    si += 1
-                    continue
-                qty = min(buy.qty, sell.qty)
-                if qty <= 0:
-                    bi += 1
-                    continue
-                forward = (buy.forward_price + sell.forward_price) / 2.0
-                # Move each side's pro-rata margin onto the contract.
-                m_long = buy.margin * (qty / buy.qty) if buy.qty > 0 else 0.0
-                m_short = sell.margin * (qty / sell.qty) if sell.qty > 0 else 0.0
-                buy.margin -= m_long
-                sell.margin -= m_short
-                self._futures_seq += 1
-                contract = FuturesContract(
-                    contract_id=f"fc-{self._futures_seq}",
-                    resource_type=resource,
-                    qty=qty,
-                    forward_price=forward,
-                    settlement_epoch=settle,
-                    long_agent_id=buy.agent_id,
-                    short_agent_id=sell.agent_id,
-                    margin_long=m_long,
-                    margin_short=m_short,
-                    created_epoch=self._current_epoch,
-                )
-                self._futures_contracts.append(contract)
-                buy.qty -= qty
-                sell.qty -= qty
-                key = self._futures_key(resource, settle)
-                self._last_forward_price[key] = forward
-                self._futures_volume_this_epoch[key] = (
-                    self._futures_volume_this_epoch.get(key, 0.0) + qty
-                )
-                events.append(GTBEvent(
-                    event_type="futures_matched", step=self._current_step,
-                    epoch=self._current_epoch, agent_id=buy.agent_id,
-                    details={"contract_id": contract.contract_id,
-                             "resource": resource.value, "qty": qty,
-                             "forward_price": forward,
-                             "settlement_epoch": settle,
-                             "long": buy.agent_id, "short": sell.agent_id},
-                ))
-                if buy.qty <= 1e-12:
-                    bi += 1
-                if sell.qty <= 1e-12:
-                    si += 1
+            # For each buyer (best price first), match against the cheapest
+            # crossable sellers, skipping self-orders without consuming them
+            # for other buyers (bd-pfc — a simple two-pointer stranded a
+            # seller when it self-matched the current buyer).
+            for buy in buys:
+                for sell in sells:
+                    if buy.qty <= 1e-12:
+                        break
+                    if sell.qty <= 1e-12:
+                        continue
+                    if buy.agent_id == sell.agent_id:
+                        continue
+                    if buy.forward_price < sell.forward_price:
+                        break  # sells sorted ascending: none cheaper ahead
+                    qty = min(buy.qty, sell.qty)
+                    forward = (buy.forward_price + sell.forward_price) / 2.0
+                    # Move each side's pro-rata margin onto the contract.
+                    m_long = buy.margin * (qty / buy.qty) if buy.qty > 0 else 0.0
+                    m_short = sell.margin * (qty / sell.qty) if sell.qty > 0 else 0.0
+                    buy.margin -= m_long
+                    sell.margin -= m_short
+                    self._futures_seq += 1
+                    contract = FuturesContract(
+                        contract_id=f"fc-{self._futures_seq}",
+                        resource_type=resource,
+                        qty=qty,
+                        forward_price=forward,
+                        settlement_epoch=settle,
+                        long_agent_id=buy.agent_id,
+                        short_agent_id=sell.agent_id,
+                        margin_long=m_long,
+                        margin_short=m_short,
+                        created_epoch=self._current_epoch,
+                    )
+                    self._futures_contracts.append(contract)
+                    buy.qty -= qty
+                    sell.qty -= qty
+                    key = self._futures_key(resource, settle)
+                    self._last_forward_price[key] = forward
+                    self._futures_volume_this_epoch[key] = (
+                        self._futures_volume_this_epoch.get(key, 0.0) + qty
+                    )
+                    events.append(GTBEvent(
+                        event_type="futures_matched", step=self._current_step,
+                        epoch=self._current_epoch, agent_id=buy.agent_id,
+                        details={"contract_id": contract.contract_id,
+                                 "resource": resource.value, "qty": qty,
+                                 "forward_price": forward,
+                                 "settlement_epoch": settle,
+                                 "long": buy.agent_id, "short": sell.agent_id},
+                    ))
         # Drop fully-filled resting orders.
         self._futures_buy_orders = [o for o in self._futures_buy_orders
                                     if o.qty > 1e-12]
@@ -1063,97 +1062,94 @@ class GTBEnvironment:
                 key=lambda o: o.price_per_unit,
             )
 
-            bi, si = 0, 0
-            while bi < len(buys) and si < len(sells):
-                buy = buys[bi]
-                sell = sells[si]
-                if buy.price_per_unit < sell.price_per_unit:
-                    break  # no more matchable orders
-                if buy.agent_id == sell.agent_id:
-                    si += 1
-                    continue
-
-                qty = min(buy.quantity, sell.quantity)
-                if qty <= 0:
-                    bi += 1
-                    continue
-
-                price = (buy.price_per_unit + sell.price_per_unit) / 2.0
-                total = qty * price
-                fee = total * fee_rate
-
+            # For each buyer (best price first), match against the cheapest
+            # crossable sellers, skipping self-orders without consuming them
+            # for other buyers (bd-pfc — the old two-pointer stranded a
+            # seller when it self-matched the current buyer).
+            for buy in buys:
                 buyer = self._workers.get(buy.agent_id)
-                seller = self._workers.get(sell.agent_id)
-                if buyer is None or seller is None:
-                    bi += 1
+                if buyer is None:
                     continue
-
-                persistent = self._config.market.order_ttl_steps > 0
-                if persistent:
-                    # Coin and resource were escrowed at post time; the
-                    # midpoint price <= bid, so escrow always covers it.
-                    buy.escrowed_coin -= total + fee
-                    seller.add_resource(ResourceType.COIN, total - fee)
-                else:
-                    # Legacy same-tick book: check balances at match time
-                    if buyer.get_resource(ResourceType.COIN) < total + fee:
-                        bi += 1
+                for sell in sells:
+                    if buy.quantity <= 0:
+                        break
+                    if sell.quantity <= 0:
                         continue
-                    if seller.get_resource(rtype) < qty:
-                        si += 1
+                    if buy.agent_id == sell.agent_id:
                         continue
-                    buyer.remove_resource(ResourceType.COIN, total + fee)
-                    seller.add_resource(ResourceType.COIN, total - fee)
-                    seller.remove_resource(rtype, qty)
-                # Buyer pays total+fee, seller receives total-fee: both
-                # fee halves leave circulation.
-                self._ledger_burn("trade_fees", 2.0 * fee)
-                self._coin_earned_this_epoch[sell.agent_id] = (
-                    self._coin_earned_this_epoch.get(sell.agent_id, 0.0)
-                    + (total - fee)
-                )
-                buyer.add_resource(rtype, qty)
+                    if buy.price_per_unit < sell.price_per_unit:
+                        break  # sells sorted ascending: none cheaper ahead
+                    seller = self._workers.get(sell.agent_id)
+                    if seller is None:
+                        continue
 
-                # Price discovery info exposed in observations
-                self._last_trade_price[rtype.value] = price
-                self._volume_this_epoch[rtype.value] = (
-                    self._volume_this_epoch.get(rtype.value, 0.0) + qty
-                )
+                    qty = min(buy.quantity, sell.quantity)
+                    price = (buy.price_per_unit + sell.price_per_unit) / 2.0
+                    total = qty * price
+                    fee = total * fee_rate
 
-                # Trade income for seller
-                seller.gross_income_this_epoch += total - fee
-                seller.reported_income_this_epoch += total - fee
-                seller.cumulative_income += total - fee
+                    persistent = self._config.market.order_ttl_steps > 0
+                    if persistent:
+                        # Coin and resource were escrowed at post time; the
+                        # midpoint price <= bid, so escrow always covers it.
+                        buy.escrowed_coin -= total + fee
+                        seller.add_resource(ResourceType.COIN, total - fee)
+                    else:
+                        # Legacy same-tick book: check balances at match time.
+                        # The cheapest available seller is first; if the buyer
+                        # can't afford it, it can't afford a pricier one.
+                        if buyer.get_resource(ResourceType.COIN) < total + fee:
+                            break
+                        if seller.get_resource(rtype) < qty:
+                            continue
+                        buyer.remove_resource(ResourceType.COIN, total + fee)
+                        seller.add_resource(ResourceType.COIN, total - fee)
+                        seller.remove_resource(rtype, qty)
+                    # Buyer pays total+fee, seller receives total-fee: both
+                    # fee halves leave circulation.
+                    self._ledger_burn("trade_fees", 2.0 * fee)
+                    self._coin_earned_this_epoch[sell.agent_id] = (
+                        self._coin_earned_this_epoch.get(sell.agent_id, 0.0)
+                        + (total - fee)
+                    )
+                    buyer.add_resource(rtype, qty)
 
-                if self._config.ledger_mode == "coin":
-                    # Purchases are an expense: income is net coin flow.
-                    # (compute_tax floors at 0 if an epoch nets negative.)
-                    buyer.gross_income_this_epoch -= total + fee
-                    buyer.reported_income_this_epoch -= total + fee
-                    buyer.cumulative_income -= total + fee
-                    # Mirror in the gap tracker so income == net coin
-                    # flow closes the epoch_ledger gap to zero.
-                    self._coin_earned_this_epoch[buy.agent_id] = (
-                        self._coin_earned_this_epoch.get(buy.agent_id, 0.0)
-                        - (total + fee)
+                    # Price discovery info exposed in observations
+                    self._last_trade_price[rtype.value] = price
+                    self._volume_this_epoch[rtype.value] = (
+                        self._volume_this_epoch.get(rtype.value, 0.0) + qty
                     )
 
-                buy.quantity -= qty
-                sell.quantity -= qty
-                if buy.quantity <= 0:
-                    bi += 1
-                if sell.quantity <= 0:
-                    si += 1
+                    # Trade income for seller
+                    seller.gross_income_this_epoch += total - fee
+                    seller.reported_income_this_epoch += total - fee
+                    seller.cumulative_income += total - fee
 
-                events.append(GTBEvent(
-                    event_type="trade", step=self._current_step,
-                    epoch=self._current_epoch,
-                    details={
-                        "buyer": buy.agent_id, "seller": sell.agent_id,
-                        "resource": rtype.value, "quantity": qty,
-                        "price": price, "fee": fee,
-                    },
-                ))
+                    if self._config.ledger_mode == "coin":
+                        # Purchases are an expense: income is net coin flow.
+                        # (compute_tax floors at 0 if an epoch nets negative.)
+                        buyer.gross_income_this_epoch -= total + fee
+                        buyer.reported_income_this_epoch -= total + fee
+                        buyer.cumulative_income -= total + fee
+                        # Mirror in the gap tracker so income == net coin
+                        # flow closes the epoch_ledger gap to zero.
+                        self._coin_earned_this_epoch[buy.agent_id] = (
+                            self._coin_earned_this_epoch.get(buy.agent_id, 0.0)
+                            - (total + fee)
+                        )
+
+                    buy.quantity -= qty
+                    sell.quantity -= qty
+
+                    events.append(GTBEvent(
+                        event_type="trade", step=self._current_step,
+                        epoch=self._current_epoch,
+                        details={
+                            "buyer": buy.agent_id, "seller": sell.agent_id,
+                            "resource": rtype.value, "quantity": qty,
+                            "price": price, "fee": fee,
+                        },
+                    ))
 
         if self._config.market.order_ttl_steps > 0:
             # Persistent book: drop filled orders, expire stale ones

@@ -216,3 +216,28 @@ def test_zi_traders_activate_the_market():
     ceiling = cfg.market.price_ceiling
     for t in trades:
         assert floor <= t.details["price"] <= ceiling
+
+
+def test_spot_self_match_does_not_strand_counterparty():
+    """bd-pfc: an agent resting both a bid and an ask must not block a
+    different agent's valid cross against that agent's order."""
+    env = _make_env(ttl=5)
+    env.add_worker("w0")
+    env.add_worker("w1")
+    w0 = env._workers["w0"]; w1 = env._workers["w1"]
+    w0.add_resource(ResourceType.WOOD, 5.0)   # w0 can sell wood
+    w1.add_resource(ResourceType.COIN, 50.0)  # w1 can buy
+    # w0 rests a sell; then w0 also bids and w1 bids above the ask.
+    env.apply_actions({"w0": GTBAction(agent_id="w0",
+        action_type=GTBActionType.TRADE_SELL, resource_type=ResourceType.WOOD,
+        quantity=1.0, price=1.0)})
+    env.apply_actions({
+        "w0": GTBAction(agent_id="w0", action_type=GTBActionType.TRADE_BUY,
+            resource_type=ResourceType.WOOD, quantity=1.0, price=2.0),
+        "w1": GTBAction(agent_id="w1", action_type=GTBActionType.TRADE_BUY,
+            resource_type=ResourceType.WOOD, quantity=1.0, price=2.0),
+    })
+    trades = [e for e in env._events if getattr(e, "event_type", "") == "trade"]
+    # w1 should have bought w0's wood (w0/w0 self-pair skipped, not stranded)
+    assert any(t.details["buyer"] == "w1" and t.details["seller"] == "w0"
+               for t in trades)

@@ -395,3 +395,19 @@ def test_basis_uses_nearest_dated_forward_not_insertion_order():
     env._last_trade_price["wood"] = 1.0      # spot
     # nearest-dated forward is wood@2 (1.3) -> basis 0.3, not 1.0
     assert env.futures_summary()["basis"] == pytest.approx(0.3)
+
+
+def test_self_match_does_not_strand_counterparty_for_other_agents():
+    """bd-pfc: when one agent rests both a bid and an ask, the old
+    two-pointer could skip a different agent's valid cross against that
+    agent's order. w1's long must still match w0's short."""
+    env = _env()
+    # w0 rests a short; then w0 also longs and w1 longs at the same price.
+    env.apply_actions({"w0": _fut("w0", "short", 1.0, 1.0, 3)})
+    env.apply_actions({
+        "w0": _fut("w0", "long", 1.0, 2.0, 3),   # self vs w0's short -> skip
+        "w1": _fut("w1", "long", 1.0, 2.0, 3),   # must cross w0's short
+    })
+    assert len(env._futures_contracts) == 1
+    c = env._futures_contracts[0]
+    assert c.long_agent_id == "w1" and c.short_agent_id == "w0"

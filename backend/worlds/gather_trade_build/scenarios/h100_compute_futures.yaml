@@ -1,0 +1,120 @@
+# H100 Compute Futures Scenario
+# Gather-Trade-Build economy where H100 GPU compute (ResourceType.COMPUTE)
+# is a first-class tradeable commodity: "datacenter" tiles regenerate
+# compute-hours that workers gather, spot-trade, and write dated forward
+# contracts on through the resource-generic futures engine (bd ja2).
+#
+# Run:  python -m worlds.gather_trade_build.run_scenario \
+#         worlds/gather_trade_build/scenarios/h100_compute_futures.yaml \
+#         --epochs 6 --steps 12
+
+scenario_id: h100_compute_futures
+description: >
+  H100 compute-futures demo. Datacenter tiles seed a spot market in GPU
+  compute-hours; a futures desk (maker + taker) keeps a two-sided forward
+  curve, and a datacenter operator hedges its spot-priced compute revenue
+  with short forwards. Exercises the COMPUTE resource end-to-end:
+  gather -> spot trade -> matched forward -> cash settlement.
+motif: ai_economist
+
+# ── Domain: Gather-Trade-Build ────────────────────────────────────────
+domain:
+  type: gather_trade_build
+
+  map:
+    height: 15
+    width: 15
+    # Datacenter tiles dominate so workers actually gather/trade compute.
+    wood_density: 0.05
+    stone_density: 0.05
+    compute_density: 0.25
+    resource_regen_rate: 0.1
+    resource_max_amount: 5.0
+
+  market:
+    enabled: true
+    transaction_fee_rate: 0.02
+    price_floor: 0.1
+    price_ceiling: 100.0
+    order_ttl_steps: 4          # persistent book so resting forwards rest
+    futures_enabled: true
+    futures_margin_rate: 0.2
+
+  build:
+    wood_cost: 3.0
+    stone_cost: 3.0
+    income_per_house_per_step: 1.0
+    max_houses_per_agent: 10
+
+  energy_per_step: 10.0
+  energy_cost_move: 1.0
+  energy_cost_gather: 1.0
+  energy_cost_trade: 0.5
+  energy_cost_build: 2.0
+
+# ── Agents ────────────────────────────────────────────────────────────
+agents:
+  # H100 spot desk: zero-intelligence traders making two-sided flow in
+  # compute, so the spot price discovers organically (Gode & Sunder ZI-C)
+  # and futures settle against a real, moving spot rather than the forward
+  # fallback. NOTE: with scripted ZI agents the spot book is deliberately
+  # thin (a handful of crossings/run, and seed-sensitive — adding agents
+  # reshuffles every per-worker seed). The futures market below is the
+  # robust part of this demo; rigorous spot price-discovery and hedging
+  # statistics belong in the N=100 sweep (bd k9w), not a single run.
+  - policy: trader
+    count: 4
+    resource: compute
+    value_estimate: 1.0
+    value_jitter: 0.5   # heterogeneous private values so bids cross asks
+    order_qty: 1.0
+    endowment:
+      compute: 4.0    # seed compute-hours so the desk quotes both sides
+
+  # Datacenter operators: gather H100 compute to feed the spot market.
+  - policy: honest
+    count: 2
+    skill_gather: 1.2
+    skill_build: 0.5
+
+  # Futures desk: a two-sided forward maker quoting the COMPUTE curve...
+  - policy: futures_maker
+    count: 2
+    resource: compute
+    horizon: 3
+    spread: 0.1
+    qty: 1.0
+
+  # ...and takers that cross those quotes to mint matched contracts.
+  - policy: futures_taker
+    count: 2
+    qty: 1.0
+
+  # Datacenter operator that hedges its compute revenue with short forwards.
+  - policy: futures_hedger
+    count: 2
+    resource: compute
+    hedge: true
+    horizon: 3
+    hedge_qty: 1.0
+    hedge_every: 4
+
+# ── Simulation ────────────────────────────────────────────────────────
+simulation:
+  n_epochs: 6
+  steps_per_epoch: 12
+  seed: 42
+
+# ── Outputs ───────────────────────────────────────────────────────────
+outputs:
+  event_log: "logs/h100_compute_futures_events.jsonl"
+  metrics_csv: "logs/h100_compute_futures_metrics.csv"
+
+# ── Success Criteria ──────────────────────────────────────────────────
+success_criteria:
+  min_epochs: 6
+  min_agents: 10
+  # Qualitative checks:
+  # - COMPUTE spot trades print a last price (price discovery)
+  # - Forward quotes rest and takers cross them (matched contracts)
+  # - Contracts cash-settle zero-sum at their settlement epoch

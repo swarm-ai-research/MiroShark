@@ -187,3 +187,83 @@ def test_compute_futures_curve_keyed_by_compute():
     assert "compute@3" in curve
     assert curve["compute@3"]["best_bid"] == 0.9
     assert curve["compute@3"]["best_ask"] == 1.5
+
+
+# ----------------------------------------------------------------------
+# bd 5ij: MatchedHedgerPolicy — matched sizing + through-the-book execution
+# ----------------------------------------------------------------------
+
+from worlds.gather_trade_build.agents import MatchedHedgerPolicy  # noqa: E402
+
+
+def _obs(held, *, bid=None, settle=3, spot=3.0, frozen=False):
+    """Minimal obs for a compute producer; optional resting forward bid."""
+    curve = {}
+    if bid is not None:
+        curve["compute@%d" % settle] = {
+            "resource": "compute", "settlement_epoch": settle,
+            "best_bid": bid, "best_ask": None, "last_forward": None,
+            "n_bids": 1, "n_asks": 0,
+        }
+    return {
+        "frozen": frozen,
+        "inventory": {"compute": held, "coin": 1000.0},
+        "market_info": {"compute": {"last_price": spot}},
+        "futures_curve": curve,
+    }
+
+
+def test_matched_hedger_sizes_to_exposure_and_crosses_bid():
+    pol = MatchedHedgerPolicy("p", resource=ResourceType.COMPUTE,
+                              hedge_ratio=1.0, lot=2.0)
+    # Holds 4 compute -> target hedge 4 units, lot 2: two FUTURES_SELLs that
+    # CROSS the resting bid (priced at the bid, 3.0), then stops hedging.
+    a1 = pol.decide(_obs(4.0, bid=3.0))
+    assert a1.action_type == GTBActionType.FUTURES_SELL
+    assert a1.quantity == pytest.approx(2.0)
+    assert a1.price == pytest.approx(3.0)        # hits the bid (slippage-bearing)
+    assert a1.settlement_epoch == 3
+    a2 = pol.decide(_obs(4.0, bid=3.0))
+    assert a2.action_type == GTBActionType.FUTURES_SELL
+    assert a2.quantity == pytest.approx(2.0)
+    # Exposure now fully hedged (4/4) -> switches to spot-selling.
+    a3 = pol.decide(_obs(4.0, bid=3.0))
+    assert a3.action_type == GTBActionType.TRADE_SELL
+    assert a3.resource_type == ResourceType.COMPUTE
+
+
+def test_matched_hedger_zero_ratio_is_active_unhedged_control():
+    # hedge_ratio=0: never hedges, but still spot-sells (genuine exposure) —
+    # the non-degenerate control bd k9w check C lacked.
+    pol = MatchedHedgerPolicy("p", hedge_ratio=0.0)
+    for _ in range(3):
+        a = pol.decide(_obs(4.0, bid=3.0))
+        assert a.action_type == GTBActionType.TRADE_SELL
+
+
+def test_matched_hedger_without_book_cannot_hedge_but_still_sells():
+    # No resting bid to cross -> the hedge can't execute; the producer doesn't
+    # post an unmatched order, it just sells its exposure.
+    pol = MatchedHedgerPolicy("p", hedge_ratio=1.0, lot=2.0)
+    a = pol.decide(_obs(4.0, bid=None))
+    assert a.action_type == GTBActionType.TRADE_SELL
+
+
+def test_matched_hedger_fills_at_bid_through_real_engine():
+    # End-to-end: a resting long bid at 2.0; the producer's matched hedge
+    # crosses it and the contract prints AT the bid (midpoint of bid and a
+    # sell priced at the bid) — i.e. the producer pays the spread, not its mark.
+    env = _env()
+    env._workers["p"] = env._workers.pop("w0")  # reuse an endowed worker as producer
+    env._workers["p"].agent_id = "p"
+    env._workers["p"].add_resource(ResourceType.COMPUTE, 10.0)
+    # w1 rests a long bid for compute at 2.0, settle 3.
+    env.apply_actions({"w1": _fut("w1", "long", 5.0, 2.0, 3)})
+    pol = MatchedHedgerPolicy("p", hedge_ratio=1.0, lot=3.0)
+    act = pol.decide(env.obs("p"))
+    assert act.action_type == GTBActionType.FUTURES_SELL
+    env.apply_actions({"p": act})
+    assert len(env._futures_contracts) == 1
+    c = env._futures_contracts[0]
+    assert c.short_agent_id == "p" and c.long_agent_id == "w1"
+    assert c.forward_price == pytest.approx(2.0)  # filled at the resting bid

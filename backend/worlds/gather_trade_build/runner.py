@@ -146,6 +146,17 @@ def _create_policy(
             hedge_every=agent_spec.get("hedge_every", 4),
             resource=ResourceType(agent_spec.get("resource", "wood")),
         )
+    elif ptype == "matched_hedger":
+        from worlds.gather_trade_build.agents import MatchedHedgerPolicy
+        from worlds.gather_trade_build.entities import ResourceType
+        return MatchedHedgerPolicy(
+            agent_id, seed=seed,
+            resource=ResourceType(agent_spec.get("resource", "compute")),
+            hedge_ratio=agent_spec.get("hedge_ratio", 1.0),
+            horizon=agent_spec.get("horizon", 3),
+            lot=agent_spec.get("lot", 1.0),
+            fair_value=agent_spec.get("fair_value", 1.0),
+        )
     else:
         logger.warning("Unknown policy type '%s', defaulting to honest", ptype)
         return HonestWorkerPolicy(agent_id, seed=seed)

@@ -853,3 +853,102 @@ class FuturesHedgerPolicy(GTBWorkerPolicy):
             return GTBAction(agent_id=self.agent_id,
                              action_type=GTBActionType.MOVE, direction=direction)
         return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.GATHER)
+
+
+class MatchedHedgerPolicy(GTBWorkerPolicy):
+    """Producer that hedges its realized spot exposure by *crossing* the
+    resting forward book (bd 5ij).
+
+    Two changes from ``FuturesHedgerPolicy``, the two things bd k9w found
+    missing between its check A (mechanism = 100% variance reduction) and
+    check C (naive policy realizes none of it):
+
+    1. **Matched sizing.** It keeps cumulative forwards short at
+       ``hedge_ratio`` of its throughput (compute already sold + currently
+       held), instead of a fixed cadence ``hedge_qty``. The hedge tracks the
+       exposure it is actually building.
+    2. **Through-the-book execution.** It hedges by hitting the best resting
+       forward *bid* on the curve (a crossing ``FUTURES_SELL`` priced at that
+       bid), so the order actually fills and pays the prevailing spread —
+       rather than resting at its own mark and never matching. As it consumes
+       the top of the book, deeper/worse bids remain, so large hedges realize
+       genuine slippage.
+
+    With ``hedge_ratio=0`` it is the unhedged control that still gathers and
+    spot-sells (genuine, equal exposure) — fixing the near-inert control that
+    made k9w check C degenerate.
+
+    The policy can't see its own open contracts in ``obs``, so it tracks the
+    hedged/sold quantities internally, assuming a crossing order fills (it is
+    priced to cross the resting bid it just read). Slight drift is possible if
+    the bid vanishes between read and match; acceptable for a scripted agent.
+    """
+
+    def __init__(self, agent_id: str, seed=None,
+                 resource: ResourceType = ResourceType.COMPUTE,
+                 hedge_ratio: float = 1.0, horizon: int = 3, lot: float = 1.0,
+                 fair_value: float = 1.0) -> None:
+        super().__init__(agent_id, seed)
+        self._resource = resource
+        self._hedge_ratio = max(0.0, hedge_ratio)
+        self._horizon = horizon
+        self._lot = lot
+        self._fair_value = fair_value
+        self._hedged = 0.0    # cumulative forward units shorted (assumed filled)
+        self._sold = 0.0      # cumulative compute spot-sold
+
+    def _best_forward_bid(self, obs: dict):
+        """Best resting forward bid for our resource + its settlement epoch,
+        or (None, None) if nobody is bidding the forward."""
+        curve = obs.get("futures_curve") or {}
+        best = None
+        for entry in curve.values():
+            if entry.get("resource") != self._resource.value:
+                continue
+            bid = entry.get("best_bid")
+            if bid is None:
+                continue
+            if best is None or bid > best[0]:
+                best = (bid, entry.get("settlement_epoch"))
+        return best if best is not None else (None, None)
+
+    def decide(self, obs: dict) -> GTBAction:
+        if obs.get("frozen"):
+            return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+        inv = obs.get("inventory", {})
+        held = inv.get(self._resource.value, 0.0)
+        info = (obs.get("market_info") or {}).get(self._resource.value) or {}
+        spot = info.get("last_price") or self._fair_value
+
+        # 1. Hedge to match exposure (throughput so far + inventory on hand),
+        #    executed by crossing the best resting forward bid.
+        if self._hedge_ratio > 0:
+            target = self._hedge_ratio * (self._sold + held)
+            gap = target - self._hedged
+            bid, settle = self._best_forward_bid(obs)
+            if gap >= self._lot and bid is not None:
+                qty = min(gap, self._lot)
+                self._hedged += qty
+                return GTBAction(
+                    agent_id=self.agent_id,
+                    action_type=GTBActionType.FUTURES_SELL,
+                    resource_type=self._resource, quantity=qty,
+                    price=bid,  # cross the resting bid -> fills at the bid
+                    settlement_epoch=settle,
+                )
+
+        # 2. Spot-sell accumulated inventory (the exposure being hedged).
+        if held >= 1.0:
+            self._sold += 1.0
+            return GTBAction(
+                agent_id=self.agent_id, action_type=GTBActionType.TRADE_SELL,
+                resource_type=self._resource, quantity=1.0,
+                price=max(0.1, spot * 0.95),  # cross down to ensure a sale
+            )
+
+        # 3. Produce more: walk to a datacenter tile, else gather in place.
+        direction = self._find_resource_direction(obs, self._resource.value)
+        if direction is not None:
+            return GTBAction(agent_id=self.agent_id,
+                             action_type=GTBActionType.MOVE, direction=direction)
+        return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.GATHER)

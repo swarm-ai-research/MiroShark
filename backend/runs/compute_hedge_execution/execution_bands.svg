@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="360" viewBox="0 0 660 360" font-family="system-ui,sans-serif">
+<style>.t{font-size:14px;font-weight:600}.s{font-size:11px;fill:#666}.lab{font-size:11px;fill:#444}.band{fill:#3aa55c;fill-opacity:0.16;stroke:none}.unh{fill:#999;fill-opacity:0.13;stroke:none}.med{fill:none;stroke:#2c7a47;stroke-width:2}.ideal{stroke:#888;stroke-width:1;stroke-dasharray:4 3}</style>
+<rect width="660" height="360" fill="#fff"/>
+<text class="t" x="60" y="24">H100 hedge through the book: realized revenue vs forward depth (N=100)</text>
+<text class="s" x="60" y="40">green = hedged p10–p90 · gray = unhedged p10–p90 · dashed = ideal full hedge (F·Q=$360)</text>
+<rect class="unh" x="60" y="69.0" width="540" height="226.5"/>
+<line x1="60" y1="201.9" x2="600" y2="201.9" stroke="#999" stroke-dasharray="2 2"/>
+<line class="ideal" x1="60" y1="189.8" x2="600" y2="189.8"/>
+<polygon class="band" points="60.0,104.1 195.0,139.3 330.0,209.5 465.0,201.6 600.0,197.7 600.0,197.7 465.0,201.6 330.0,209.5 195.0,252.5 60.0,274.0" />
+<polyline class="med" points="60.0,203.8 195.0,205.7 330.0,209.5 465.0,201.6 600.0,197.7" />
+<circle cx="60.0" cy="203.8" r="3" fill="#2c7a47"/>
+<text class="lab" x="60.0" y="316.0" text-anchor="middle">0.25×</text>
+<circle cx="195.0" cy="205.7" r="3" fill="#2c7a47"/>
+<text class="lab" x="195.0" y="316.0" text-anchor="middle">0.5×</text>
+<circle cx="330.0" cy="209.5" r="3" fill="#2c7a47"/>
+<text class="lab" x="330.0" y="316.0" text-anchor="middle">1×</text>
+<circle cx="465.0" cy="201.6" r="3" fill="#2c7a47"/>
+<text class="lab" x="465.0" y="316.0" text-anchor="middle">2×</text>
+<circle cx="600.0" cy="197.7" r="3" fill="#2c7a47"/>
+<text class="lab" x="600.0" y="316.0" text-anchor="middle">4×</text>
+<text class="lab" x="52" y="304.0" text-anchor="end">$239</text>
+<text class="lab" x="52" y="184.0" text-anchor="end">$370</text>
+<text class="lab" x="52" y="64.0" text-anchor="end">$502</text>
+<text class="lab" x="330.0" y="350" text-anchor="middle">forward-book depth (× exposure Q) →</text>
+</svg>

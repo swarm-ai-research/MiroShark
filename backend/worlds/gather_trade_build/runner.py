@@ -58,11 +58,14 @@ def _create_policy(
             seed=seed,
         )
     elif ptype == "trader":
+        from worlds.gather_trade_build.entities import ResourceType
+        res = agent_spec.get("resource")
         return ZITraderPolicy(
             agent_id,
             value_estimate=agent_spec.get("value_estimate", 2.0),
             value_jitter=agent_spec.get("value_jitter", 0.5),
             order_qty=agent_spec.get("order_qty", 1.0),
+            resources=(ResourceType(res),) if res else None,
             seed=seed,
         )
     elif ptype == "gaming":
@@ -118,11 +121,14 @@ def _create_policy(
         )
     elif ptype == "futures_maker":
         from worlds.gather_trade_build.agents import FuturesMakerPolicy
+        from worlds.gather_trade_build.entities import ResourceType
+        res = agent_spec.get("resource")
         return FuturesMakerPolicy(
             agent_id, seed=seed,
             horizon=agent_spec.get("horizon", 3),
             spread=agent_spec.get("spread", 0.1),
             qty=agent_spec.get("qty", 1.0),
+            resource=ResourceType(res) if res else None,
         )
     elif ptype == "futures_taker":
         from worlds.gather_trade_build.agents import FuturesTakerPolicy
@@ -131,12 +137,25 @@ def _create_policy(
         )
     elif ptype == "futures_hedger":
         from worlds.gather_trade_build.agents import FuturesHedgerPolicy
+        from worlds.gather_trade_build.entities import ResourceType
         return FuturesHedgerPolicy(
             agent_id, seed=seed,
             hedge=agent_spec.get("hedge", True),
             horizon=agent_spec.get("horizon", 3),
             hedge_qty=agent_spec.get("hedge_qty", 1.0),
             hedge_every=agent_spec.get("hedge_every", 4),
+            resource=ResourceType(agent_spec.get("resource", "wood")),
+        )
+    elif ptype == "matched_hedger":
+        from worlds.gather_trade_build.agents import MatchedHedgerPolicy
+        from worlds.gather_trade_build.entities import ResourceType
+        return MatchedHedgerPolicy(
+            agent_id, seed=seed,
+            resource=ResourceType(agent_spec.get("resource", "compute")),
+            hedge_ratio=agent_spec.get("hedge_ratio", 1.0),
+            horizon=agent_spec.get("horizon", 3),
+            lot=agent_spec.get("lot", 1.0),
+            fair_value=agent_spec.get("fair_value", 1.0),
         )
     else:
         logger.warning("Unknown policy type '%s', defaulting to honest", ptype)
@@ -174,6 +193,19 @@ class GTBScenarioRunner:
                 skill_b = spec.get("skill_build", 1.0)
                 self._env.add_worker(agent_id, skill_gather=skill_g,
                                      skill_build=skill_b)
+                # Optional starting inventory (e.g. seed compute-hours on an
+                # H100 spot desk so it can quote both sides from step 0).
+                # Non-coin only — a coin endowment would bypass the mint
+                # ledger and break conservation; add_worker handles coin.
+                endowment = spec.get("endowment") or {}
+                if endowment:
+                    from worlds.gather_trade_build.entities import ResourceType
+                    worker = self._env.workers[agent_id]
+                    for res_name, amount in endowment.items():
+                        rt = ResourceType(res_name)
+                        if rt == ResourceType.COIN:
+                            continue
+                        worker.add_resource(rt, float(amount))
                 policy = _create_policy(
                     spec, agent_id, worker_seed,
                     utility_defaults={

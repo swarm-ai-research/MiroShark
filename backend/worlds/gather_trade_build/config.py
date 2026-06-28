@@ -115,6 +115,10 @@ class MapConfig:
     width: int = 15
     wood_density: float = 0.2
     stone_density: float = 0.15
+    # H100 datacenter-tile density (bd ja2). Defaults to 0.0 so existing
+    # wood/stone scenarios are byte-identical; set > 0 to seed a compute
+    # market. wood_density + stone_density + compute_density must stay < 1.
+    compute_density: float = 0.0
     resource_regen_rate: float = 0.1
     resource_max_amount: float = 5.0
 
@@ -227,7 +231,7 @@ class GTBConfig:
         map_cfg = MapConfig(**{
             k: map_data[k] for k in (
                 "height", "width", "wood_density", "stone_density",
-                "resource_regen_rate", "resource_max_amount",
+                "compute_density", "resource_regen_rate", "resource_max_amount",
             ) if k in map_data
         })
 

@@ -19,6 +19,7 @@ from worlds.gather_trade_build.entities import (
     MarketOrder,
     Resource,
     ResourceType,
+    TRADEABLE_RESOURCES,
     WorkerState,
 )
 from worlds.gather_trade_build.tax_schedule import TaxSchedule
@@ -176,6 +177,18 @@ class GTBEnvironment:
                         position=(r, c),
                         regen_rate=self._config.map.resource_regen_rate,
                     )
+                elif roll < (self._config.map.wood_density
+                             + self._config.map.stone_density
+                             + self._config.map.compute_density):
+                    # H100 "datacenter" tile (bd ja2): regenerates compute-hours
+                    # workers gather and trade. Unreachable when
+                    # compute_density==0, so existing scenarios place no tiles.
+                    cell.resource = Resource(
+                        resource_type=ResourceType.COMPUTE,
+                        amount=self._config.map.resource_max_amount,
+                        position=(r, c),
+                        regen_rate=self._config.map.resource_regen_rate,
+                    )
                 row.append(cell)
             self._grid.append(row)
 
@@ -283,7 +296,7 @@ class GTBEnvironment:
         """Per-resource price discovery info: last trade price, best
         bid/ask on the resting book, and volume this epoch."""
         info: Dict[str, Any] = {}
-        for rtype in (ResourceType.WOOD, ResourceType.STONE):
+        for rtype in TRADEABLE_RESOURCES:
             key = rtype.value
             bids = [o.price_per_unit for o in self._buy_orders
                     if o.resource_type == rtype and o.quantity > 1e-12]
@@ -300,7 +313,7 @@ class GTBEnvironment:
     def _market_book_snapshot(self) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
         """Compact top-of-book view by resource type, for policy obs."""
         snap: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
-        for rt in (ResourceType.WOOD, ResourceType.STONE):
+        for rt in TRADEABLE_RESOURCES:
             sells = [o for o in self._sell_orders if o.resource_type == rt]
             buys = [o for o in self._buy_orders if o.resource_type == rt]
             sells = sorted(sells, key=lambda o: (o.price_per_unit, o.step))[:3]
@@ -832,7 +845,7 @@ class GTBEnvironment:
         live = self.open_futures_contracts()
         open_notional = sum(c.qty * c.forward_price for c in live)
         bases = []
-        for rt in (ResourceType.WOOD, ResourceType.STONE):
+        for rt in TRADEABLE_RESOURCES:
             spot = self._last_trade_price.get(rt.value)
             # Front-month basis: pick the nearest-dated forward print (the
             # smallest settlement epoch), not dict-insertion order. The key
@@ -1726,8 +1739,22 @@ class GTBEnvironment:
         total_coin = sum(
             w.get_resource(ResourceType.COIN) for w in self._workers.values()
         )
-        # Coin locked in resting buy orders is still worker-owned
+        # Coin locked in resting buy orders is still worker-owned.
         escrowed = sum(max(0.0, o.escrowed_coin) for o in self._buy_orders)
+        # Futures margin is also worker coin held in escrow by the env, not
+        # minted or burned (bd ja2 divergence from upstream: this diagnostic
+        # predates the bd-af2/oo7 futures feature and otherwise false-positives
+        # a "conservation violation" for every coin of in-flight margin). Count
+        # both resting-order margin and matched-but-unsettled contract margin;
+        # settlement returns it, keeping the actual ledger conserved.
+        escrowed += sum(
+            max(0.0, o.margin)
+            for o in self._futures_buy_orders + self._futures_sell_orders
+        )
+        escrowed += sum(
+            max(0.0, c.margin_long) + max(0.0, c.margin_short)
+            for c in self._futures_contracts if c.status == "open"
+        )
         total_coin += escrowed
         minted = sum(self._coin_minted.values())
         burned = sum(self._coin_burned.values())

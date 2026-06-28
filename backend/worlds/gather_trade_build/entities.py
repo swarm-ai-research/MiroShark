@@ -13,6 +13,21 @@ class ResourceType(Enum):
     WOOD = "wood"
     STONE = "stone"
     COIN = "coin"
+    # H100 GPU compute, measured in compute-hours. A first-class tradeable
+    # commodity (bd ja2): "datacenter" tiles (map.compute_density) regenerate
+    # H100 capacity that workers gather, spot-trade, and write dated forward
+    # contracts on through the existing resource-generic futures engine.
+    COMPUTE = "compute"
+
+
+# Resources that can be gathered, spot-traded, and written as dated forwards
+# — everything except COIN, the numéraire. Canonical display/iteration order;
+# add new commodities here so per-resource market views stay in sync.
+TRADEABLE_RESOURCES = (
+    ResourceType.WOOD,
+    ResourceType.STONE,
+    ResourceType.COMPUTE,
+)
 
 
 class GTBActionType(Enum):

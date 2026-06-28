@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="340" viewBox="0 0 640 340" font-family="system-ui,sans-serif">
+<style>.t{font-size:14px;font-weight:600}.s{font-size:11px;fill:#666}.lab{font-size:11px;fill:#444}.band{fill:#3aa55c;fill-opacity:0.15;stroke:none}.med{fill:none;stroke:#2c7a47;stroke-width:2}</style>
+<rect width="640" height="340" fill="#fff"/>
+<text class="t" x="56" y="24">H100 training-run cost vs hedge ratio (N=100 seeds)</text>
+<text class="s" x="56" y="40">green band = p10–p90 net cost · line = median · cost = $/run for Q=100 H100-hr</text>
+<line x1="56" y1="284" x2="584" y2="284" stroke="#ccc"/>
+<line x1="56" y1="56" x2="56" y2="284" stroke="#ccc"/>
+<polygon class="band" points="56.0,56.0 188.0,86.4 320.0,116.8 452.0,147.2 584.0,177.5 584.0,177.5 452.0,204.2 320.0,230.8 188.0,257.4 56.0,284.0" />
+<polyline class="med" points="56.0,189.7 188.0,186.7 320.0,183.6 452.0,180.6 584.0,177.5" />
+<circle cx="56.0" cy="189.7" r="3" fill="#2c7a47"/>
+<text class="lab" x="56.0" y="300.0" text-anchor="middle">0.00</text>
+<circle cx="188.0" cy="186.7" r="3" fill="#2c7a47"/>
+<text class="lab" x="188.0" y="300.0" text-anchor="middle">0.25</text>
+<circle cx="320.0" cy="183.6" r="3" fill="#2c7a47"/>
+<text class="lab" x="320.0" y="300.0" text-anchor="middle">0.50</text>
+<circle cx="452.0" cy="180.6" r="3" fill="#2c7a47"/>
+<text class="lab" x="452.0" y="300.0" text-anchor="middle">0.75</text>
+<circle cx="584.0" cy="177.5" r="3" fill="#2c7a47"/>
+<text class="lab" x="584.0" y="300.0" text-anchor="middle">1.00</text>
+<text class="lab" x="48" y="288.0" text-anchor="end">$244</text>
+<text class="lab" x="48" y="174.0" text-anchor="end">$368</text>
+<text class="lab" x="48" y="60.0" text-anchor="end">$492</text>
+<text class="lab" x="320.0" y="332" text-anchor="middle">hedge ratio (fraction of exposure locked forward) →</text>
+</svg>

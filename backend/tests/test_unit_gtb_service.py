@@ -394,6 +394,81 @@ class TestPlaceStakeApi:
         assert out["ok"] is False
         assert out["reason"] == "invalid_or_insufficient_coin"
 
+    def test_both_stake_pathways_escrow_identically(self, gtb_modules):
+        # bd x21: place_stake (HTTP) and the action-piggybacked path now share
+        # _place_stake_locked, so a valid stake debits coin the same way on
+        # both. Pin parity: same inputs -> same remaining coin + one open stake.
+        svc_mod, _ = gtb_modules
+        from worlds.gather_trade_build.config import GTBConfig
+        from worlds.gather_trade_build.env import GTBAction
+        from worlds.gather_trade_build.entities import GTBActionType
+
+        def _fresh(seed):
+            cfg = GTBConfig.from_dict({})
+            svc = svc_mod.GTBWorldService(
+                config=cfg, agent_specs=[{"policy": "honest", "count": 1}],
+                steps_per_epoch=1, seed=seed,
+            )
+            svc.step()
+            mid = svc.markets()["open"][0]["market_id"]
+            svc._env.workers["worker_0"].inventory["coin"] = 10.0
+            return svc, mid
+
+        # HTTP path
+        svc_a, mid_a = _fresh(61)
+        svc_a.place_stake("worker_0", mid_a, "yes", 3.0)
+        coin_http = svc_a._env.workers["worker_0"].inventory["coin"]
+
+        # Action-piggybacked path
+        svc_b, mid_b = _fresh(61)
+        svc_b.set_action("worker_0", GTBAction(
+            agent_id="worker_0", action_type=GTBActionType.NOOP,
+            stake_market_id=mid_b, stake_side="yes", stake_amount=3.0,
+        ))
+        svc_b.step()
+        coin_action = svc_b._env.workers["worker_0"].inventory["coin"]
+
+        assert coin_http == coin_action == 7.0
+        assert len(svc_a._stake_book.open_stakes()[mid_a]) == 1
+        assert len(svc_b._stake_book.open_stakes()[mid_b]) == 1
+
+
+class TestObsRenderingConsistency:
+    """bd fbs: single-agent and batch drivers must show the same per-worker
+    observation field set + visible-cell slice for the same world state."""
+
+    def _obs(self, n_resource_cells):
+        cells = [{"pos": (0, i), "resource": "wood"} for i in range(n_resource_cells)]
+        cells.append({"pos": (1, 1)})  # a non-resource cell
+        return {
+            "position": (0, 0), "inventory": {"coin": 5.0}, "energy": 9.0,
+            "effort_this_epoch": 1.0, "gross_income": 2.0, "deferred_income": 0.0,
+            "houses_built": 0, "epoch": 1, "step": 2, "frozen": False,
+            "tax_schedule": {"brackets": []}, "market_info": {},
+            "last_epoch": None, "visible_cells": cells, "open_markets": [],
+        }
+
+    def test_visible_resources_capped_at_limit(self, gtb_modules):
+        _, llm = gtb_modules
+        fields = llm._obs_fields(self._obs(25))
+        assert len(fields["visible_resources"]) == llm._VISIBLE_RESOURCES_LIMIT
+        assert fields["visible_cells_count"] == 26  # 25 resource + 1 empty
+
+    def test_render_obs_uses_shared_field_set(self, gtb_modules):
+        # _render_obs is just _obs_fields + open_markets, so every shared field
+        # (incl. the same slice) is present and identical.
+        import json as _json
+        _, llm = gtb_modules
+        obs = self._obs(12)
+        rendered = _json.loads(llm._render_obs(obs))
+        # Normalize through JSON too (tuples -> lists) so we compare apples to
+        # apples; the point is that every shared field is carried identically.
+        fields = _json.loads(_json.dumps(llm._obs_fields(obs)))
+        for k, v in fields.items():
+            assert rendered[k] == v
+        assert rendered["open_markets"] == []
+        assert len(rendered["visible_resources"]) == llm._VISIBLE_RESOURCES_LIMIT
+
 
 class TestDeepOverrideMerge:
     def test_simulation_block_keys_compose_with_scenario(self, gtb_modules):

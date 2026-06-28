@@ -80,10 +80,24 @@ def _render_persona(persona: Dict[str, Any]) -> str:
     return f"You are {name}. {bio}\nYour objective: {objective}"
 
 
-def _render_obs(obs: Dict[str, Any]) -> str:
+# Cap on how many visible resource cells are surfaced to the LLM, applied
+# identically in the single-agent and batch paths so the same world state
+# yields the same decision context regardless of driver (bd fbs).
+_VISIBLE_RESOURCES_LIMIT = 10
+
+
+def _obs_fields(obs: Dict[str, Any]) -> Dict[str, Any]:
+    """The per-worker observation field set shown to the LLM.
+
+    Single source of truth for both the single-agent ``_render_obs`` and the
+    ``BatchLLMDriver`` payload, so the two drivers never diverge on which
+    fields (or how many visible cells) an agent sees. ``open_markets`` is NOT
+    included here: the single-agent path appends it per-agent, the batch path
+    hoists it once to the top level.
+    """
     visible = obs.get("visible_cells", [])
     res_cells = [c for c in visible if "resource" in c]
-    return json.dumps({
+    return {
         "position": obs.get("position"),
         "inventory": obs.get("inventory"),
         "energy": obs.get("energy"),
@@ -97,8 +111,14 @@ def _render_obs(obs: Dict[str, Any]) -> str:
         "tax_brackets": obs.get("tax_schedule", {}).get("brackets", []),
         "market_prices": obs.get("market_info"),
         "last_epoch": obs.get("last_epoch"),
-        "visible_resources": res_cells[:10],
+        "visible_resources": res_cells[:_VISIBLE_RESOURCES_LIMIT],
         "visible_cells_count": len(visible),
+    }
+
+
+def _render_obs(obs: Dict[str, Any]) -> str:
+    return json.dumps({
+        **_obs_fields(obs),
         "open_markets": obs.get("open_markets", []),
     }, indent=2)
 
@@ -311,23 +331,10 @@ class BatchLLMDriver:
                 "workers": {
                     aid: {
                         "persona": self._personas.get(aid, {"name": aid}),
-                        "obs": {
-                            "position": obs.get("position"),
-                            "inventory": obs.get("inventory"),
-                            "energy": obs.get("energy"),
-                            "effort_this_epoch": obs.get("effort_this_epoch"),
-                            "gross_income": obs.get("gross_income"),
-                            "houses_built": obs.get("houses_built"),
-                            "epoch": obs.get("epoch"),
-                            "step": obs.get("step"),
-                            "frozen": obs.get("frozen"),
-                            "tax_brackets": obs.get("tax_schedule", {}).get("brackets", []),
-                            "market_prices": obs.get("market_info"),
-                            "last_epoch": obs.get("last_epoch"),
-                            "visible_resources": [
-                                c for c in obs.get("visible_cells", []) if "resource" in c
-                            ][:8],
-                        },
+                        # Same field set + visible-cell slice as the
+                        # single-agent path (bd fbs); open_markets is shared
+                        # at the top level above.
+                        "obs": _obs_fields(obs),
                     }
                     for aid, obs in obs_by_agent.items()
                 },

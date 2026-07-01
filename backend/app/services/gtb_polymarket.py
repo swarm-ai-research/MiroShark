@@ -61,18 +61,6 @@ _LAPLACE = 1.0
 _CONFIDENCE_SOURCES = ("resolved", "no_stakes", "one_sided", "two_sided")
 
 
-def _confidence_source(
-    is_resolved: bool, yes_pool: float, no_pool: float
-) -> str:
-    if is_resolved:
-        return "resolved"
-    if yes_pool <= 0 and no_pool <= 0:
-        return "no_stakes"
-    if yes_pool <= 0 or no_pool <= 0:
-        return "one_sided"
-    return "two_sided"
-
-
 def _iso_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -161,7 +149,6 @@ def _market_to_envelope(
         "direction": direction,
         "confidence_pct": confidence_pct,
         "confidence_tier": _confidence_tier(confidence_pct),
-        "confidence_source": _confidence_source(is_resolved, yes_pool, no_pool),
         "risk_tier": _risk_tier(confidence_pct),
         # See module docstring: only `two_sided` envelopes are forecasts.
         # `one_sided` and `no_stakes` are population sentiment polls

@@ -14,6 +14,20 @@ from ..utils.logger import get_logger
 
 logger = get_logger("miroshark.api.gtb")
 
+# Upper bound on steps advanced in a single /step request, so one call can't
+# pin the worker thread on an unbounded loop.
+_MAX_STEP_BATCH = 1000
+
+
+def _coerce_step_count(raw, maximum: int = _MAX_STEP_BATCH) -> int:
+    """Coerce a requested step count to an int in ``[1, maximum]``.
+
+    Raises ``ValueError``/``TypeError`` on non-numeric input (e.g. a string
+    or list) so the route can return 400 instead of an unhandled 500.
+    """
+    n = int(raw)
+    return max(1, min(n, maximum))
+
 
 @gtb_bp.route("/<sim_id>/start", methods=["POST"])
 def start_world(sim_id: str):
@@ -36,7 +50,10 @@ def step_world(sim_id: str):
     if service is None:
         return jsonify({"error": "no world for sim_id"}), 404
     payload = request.get_json(silent=True) or {}
-    n = max(1, int(payload.get("n", 1)))
+    try:
+        n = _coerce_step_count(payload.get("n", 1))
+    except (TypeError, ValueError):
+        return jsonify({"error": "'n' must be an integer"}), 400
     results = [service.step() for _ in range(n)]
     return jsonify({"sim_id": sim_id, "ticks": results})
 

@@ -245,6 +245,36 @@ class GTBWorldService:
         with self._lock:
             self._action_overrides[agent_id] = action
 
+    def _place_stake_locked(
+        self, agent_id: str, market_id: str, side: str, amount: float,
+    ):
+        """Validate + escrow one stake. CALLER MUST HOLD ``self._lock``.
+
+        The single source of truth for both stake pathways — the HTTP
+        ``place_stake()`` and the action-piggybacked ``_process_stakes_locked()``
+        — so escrow/validation never diverge between them. Returns a tuple
+        ``(ok, reason, stake, coin)``: on success ``(True, None, stake,
+        coin_before)``; on failure ``(False, reason_str, None, coin_seen)``.
+        """
+        market = self._market_book.find_open(market_id)
+        if market is None:
+            return (False, "no_such_open_market", None, 0.0)
+        worker = self._env.workers.get(agent_id)
+        if worker is None:
+            return (False, "no_such_agent", None, 0.0)
+        coin = worker.inventory.get("coin", 0.0)
+        amount = float(amount)
+        stake = self._stake_book.place(
+            agent_id=agent_id, market=market, side=side,
+            amount=amount, worker_coin=coin, epoch=self._env.current_epoch,
+        )
+        if stake is None:
+            return (False, "invalid_or_insufficient_coin", None, coin)
+        # Escrow: debit the worker's coin now; payouts on resolve.
+        worker.inventory["coin"] = max(0.0, coin - amount)
+        self._env.register_external_coin(-amount, "stake_escrow")
+        return (True, None, stake, coin)
+
     def place_stake(
         self, agent_id: str, market_id: str, side: str, amount: float,
     ) -> Dict[str, Any]:
@@ -252,30 +282,22 @@ class GTBWorldService:
 
         External Polymarket bots / UI clients call this to take a YES or
         NO position on an open GTB market without having to be one of
-        the LLM-driven workers. Same validation and escrow semantics as
-        the action-piggybacked path.
+        the LLM-driven workers. Shares validation + escrow with the
+        action-piggybacked path via ``_place_stake_locked``.
         """
         with self._lock:
-            market = self._market_book.find_open(market_id)
-            worker = self._env.workers.get(agent_id)
-            if market is None:
-                return {"ok": False, "reason": "no_such_open_market",
-                        "market_id": market_id}
-            if worker is None:
-                return {"ok": False, "reason": "no_such_agent",
-                        "agent_id": agent_id}
-            coin = worker.inventory.get("coin", 0.0)
-            stake = self._stake_book.place(
-                agent_id=agent_id, market=market, side=side,
-                amount=float(amount), worker_coin=coin,
-                epoch=self._env.current_epoch,
+            ok, reason, stake, coin = self._place_stake_locked(
+                agent_id, market_id, side, amount,
             )
-            if stake is None:
-                return {"ok": False, "reason": "invalid_or_insufficient_coin",
-                        "market_id": market_id, "side": side,
-                        "amount": amount, "coin": coin}
-            worker.inventory["coin"] = max(0.0, coin - float(amount))
-            self._env.register_external_coin(-float(amount), "stake_escrow")
+            if not ok:
+                if reason == "no_such_open_market":
+                    return {"ok": False, "reason": reason,
+                            "market_id": market_id}
+                if reason == "no_such_agent":
+                    return {"ok": False, "reason": reason, "agent_id": agent_id}
+                return {"ok": False, "reason": reason, "market_id": market_id,
+                        "side": side, "amount": amount, "coin": coin}
+            worker = self._env.workers[agent_id]
             return {"ok": True, "stake": stake.to_dict(),
                     "remaining_coin": worker.inventory["coin"]}
 
@@ -283,7 +305,8 @@ class GTBWorldService:
         """Apply any stake intents piggy-backed on this tick's actions.
 
         Returns a list of GTBEvent-shaped dicts (we synthesize them locally
-        rather than touching env's GTBEvent class)."""
+        rather than touching env's GTBEvent class). Shares validation +
+        escrow with ``place_stake`` via ``_place_stake_locked``."""
         from worlds.gather_trade_build.entities import GTBEvent
         out: List[Any] = []
         for agent_id, action in actions.items():
@@ -292,37 +315,19 @@ class GTBWorldService:
             amount = float(action.stake_amount or 0.0)
             if not mid or not side or amount <= 0:
                 continue
-            market = self._market_book.find_open(mid)
-            worker = self._env.workers.get(agent_id)
-            if market is None or worker is None:
-                out.append(GTBEvent(
-                    event_type="stake_rejected",
-                    epoch=self._env.current_epoch,
-                    step=self._step_in_epoch,
-                    agent_id=agent_id,
-                    details={"reason": "no_such_market", "market_id": mid},
-                ))
-                continue
-            coin = worker.inventory.get("coin", 0.0)
-            stake = self._stake_book.place(
-                agent_id=agent_id, market=market, side=side,
-                amount=amount, worker_coin=coin,
-                epoch=self._env.current_epoch,
+            ok, reason, _stake, coin = self._place_stake_locked(
+                agent_id, mid, side, amount,
             )
-            if stake is None:
+            if not ok:
                 out.append(GTBEvent(
                     event_type="stake_rejected",
                     epoch=self._env.current_epoch,
                     step=self._step_in_epoch,
                     agent_id=agent_id,
-                    details={"reason": "invalid_or_insufficient_coin",
-                             "market_id": mid, "side": side, "amount": amount,
-                             "coin": coin},
+                    details={"reason": reason, "market_id": mid, "side": side,
+                             "amount": amount, "coin": coin},
                 ))
                 continue
-            # Escrow: debit the worker's coin now; payouts on resolve.
-            worker.inventory["coin"] = max(0.0, coin - amount)
-            self._env.register_external_coin(-amount, "stake_escrow")
             out.append(GTBEvent(
                 event_type="stake_placed",
                 epoch=self._env.current_epoch,

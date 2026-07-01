@@ -50,6 +50,7 @@ These are findings that should be treated as background knowledge when proposing
 - **Tax revenue is Laffer-shaped**, peaking near `audit_probability=0.025`, not at the naive 50% EV-breakeven.
 - **Catches don't collapse with high enforcement** — `EvasiveWorkerPolicy` keeps trying periodically regardless of audit rate.
 - **Audits saturate at the worker count** (~14) by `audit_probability ≈ 0.2`.
+- **Bilateral compute negotiation clears more feasible trades than a posted price.** The arkhai `simple-compute-market` port (`backend/worlds/gather_trade_build/compute_market.py`: listings registry + buyer-driven bisection negotiation + escrow settlement) captures ~all feasible gains-from-trade (welfare capture 1.00 vs 0.92) and fills 0.50 vs 0.34 of drawn encounters against a take-it-or-leave-it ask at a 30% markup — N=100, **disjoint** p10–p90 bands (`backend/runs/compute_market/FINDINGS.md`). The realized-rate / surplus-share gaps between the two mechanisms are **selection artifacts** (they transact different subsets), not price effects — don't read them as "negotiation moves prices."
 - **Persona-aligned LLM populations produce one-sided markets by default.** Without an explicit contrarian persona (see `BALANCED_LLM_LINEUP` in `backend/app/services/gtb_llm_personas.py`), every market pile-on goes the same direction and the `yes_probability` is a sentiment poll, not a forecast. The `confidence_source` field on each `/polymarket` envelope flags this.
 
 ## Faithful reporting

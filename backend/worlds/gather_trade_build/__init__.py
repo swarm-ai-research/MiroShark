@@ -14,6 +14,16 @@ from worlds.gather_trade_build.agents import (
     RationalWorkerPolicy,
     ZITraderPolicy,
 )
+from worlds.gather_trade_build.compute_market import (
+    ComputeDeal,
+    ComputeListing,
+    ComputeMarketplace,
+    ComputeRegistry,
+    GpuModel,
+    NegotiationResult,
+    negotiate,
+    settle_escrow,
+)
 from worlds.gather_trade_build.config import GTBConfig, UtilityConfig
 from worlds.gather_trade_build.entities import (
     GTBEvent,
@@ -41,6 +51,14 @@ from worlds.gather_trade_build.tax_schedule import TaxSchedule
 __all__ = [
     "CartelWorkerPolicy",
     "CollusiveWorkerPolicy",
+    "ComputeDeal",
+    "ComputeListing",
+    "ComputeMarketplace",
+    "ComputeRegistry",
+    "GpuModel",
+    "NegotiationResult",
+    "negotiate",
+    "settle_escrow",
     "EvasiveWorkerPolicy",
     "GamingWorkerPolicy",
     "GTBAction",

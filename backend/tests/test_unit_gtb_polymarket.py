@@ -163,6 +163,23 @@ class TestConfidenceSource:
         )
         assert payload["markets"][0]["confidence_source"] == "resolved"
 
+    def test_confidence_source_single_definition_and_arg_order(self, gtb_poly):
+        # Regression (bd 4cy): the module previously defined _confidence_source
+        # twice with mismatched parameter orders, plus a duplicate
+        # `confidence_source` dict key whose wrong-order call was only saved by
+        # the correct one shadowing it. Pin the single (yes_pool, no_pool,
+        # is_resolved) contract so a wrong-order shadow can't silently return.
+        import inspect
+
+        fn = gtb_poly._confidence_source
+        assert list(inspect.signature(fn).parameters) == [
+            "yes_pool", "no_pool", "is_resolved",
+        ]
+        assert fn(yes_pool=5.0, no_pool=0.0, is_resolved=False) == "one_sided"
+        assert fn(yes_pool=5.0, no_pool=3.0, is_resolved=False) == "two_sided"
+        assert fn(yes_pool=0.0, no_pool=0.0, is_resolved=False) == "no_stakes"
+        assert fn(yes_pool=0.0, no_pool=0.0, is_resolved=True) == "resolved"
+
 
 class TestHeadlinePrefersTwoSided:
     """The headline picker must prefer two-sided markets over one-sided

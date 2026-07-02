@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="400" viewBox="0 0 680 400" font-family="system-ui,sans-serif">
+<style>.t{font-size:14px;font-weight:600}.s{font-size:11px;fill:#666}.lab{font-size:11px;fill:#444}.med{fill:none;stroke-width:2}</style>
+<rect width="680" height="400" fill="#fff"/>
+<text class="t" x="64" y="26">SKU dispersion vs basis — willing-clear fraction, one-sided (reluctance 1.0) (N=100)</text>
+<text class="s" x="64" y="43">band = p10–p90 · more SKUs = more independent-idio diversification of the dealer book</text>
+<line x1="64" y1="336.0" x2="616" y2="336.0" stroke="#eee"/>
+<text class="lab" x="56" y="340.0" text-anchor="end">0%</text>
+<line x1="64" y1="268.0" x2="616" y2="268.0" stroke="#eee"/>
+<text class="lab" x="56" y="272.0" text-anchor="end">25%</text>
+<line x1="64" y1="200.0" x2="616" y2="200.0" stroke="#eee"/>
+<text class="lab" x="56" y="204.0" text-anchor="end">50%</text>
+<line x1="64" y1="132.0" x2="616" y2="132.0" stroke="#eee"/>
+<text class="lab" x="56" y="136.0" text-anchor="end">75%</text>
+<line x1="64" y1="64.0" x2="616" y2="64.0" stroke="#eee"/>
+<text class="lab" x="56" y="68.0" text-anchor="end">100%</text>
+<text class="lab" x="174.4" y="354.0" text-anchor="middle">0.2</text>
+<text class="lab" x="312.4" y="354.0" text-anchor="middle">0.45</text>
+<text class="lab" x="411.8" y="354.0" text-anchor="middle">0.63</text>
+<text class="lab" x="505.6" y="354.0" text-anchor="middle">0.8</text>
+<text class="lab" x="588.4" y="354.0" text-anchor="middle">0.95</text>
+<text class="lab" x="616.0" y="354.0" text-anchor="middle">1</text>
+<polygon points="174.4,289.2 312.4,286.3 411.8,274.5 505.6,234.6 588.4,64.0 616.0,64.0 616.0,64.0 588.4,153.1 505.6,279.0 411.8,309.3 312.4,312.0 174.4,336.0" fill="#b3341f" fill-opacity="0.12" stroke="none"/>
+<polyline class="med" points="174.4,304.2 312.4,299.3 411.8,295.3 505.6,260.5 588.4,117.9 616.0,64.0" stroke="#b3341f"/>
+<circle cx="174.4" cy="304.2" r="3" fill="#b3341f"/>
+<circle cx="312.4" cy="299.3" r="3" fill="#b3341f"/>
+<circle cx="411.8" cy="295.3" r="3" fill="#b3341f"/>
+<circle cx="505.6" cy="260.5" r="3" fill="#b3341f"/>
+<circle cx="588.4" cy="117.9" r="3" fill="#b3341f"/>
+<circle cx="616.0" cy="64.0" r="3" fill="#b3341f"/>
+<polygon points="174.4,236.3 312.4,208.3 411.8,177.7 505.6,101.2 588.4,64.0 616.0,64.0 616.0,64.0 588.4,64.0 505.6,217.4 411.8,297.5 312.4,301.1 174.4,314.7" fill="#c9860a" fill-opacity="0.12" stroke="none"/>
+<polyline class="med" points="174.4,279.5 312.4,262.4 411.8,239.4 505.6,157.9 588.4,64.0 616.0,64.0" stroke="#c9860a"/>
+<circle cx="174.4" cy="279.5" r="3" fill="#c9860a"/>
+<circle cx="312.4" cy="262.4" r="3" fill="#c9860a"/>
+<circle cx="411.8" cy="239.4" r="3" fill="#c9860a"/>
+<circle cx="505.6" cy="157.9" r="3" fill="#c9860a"/>
+<circle cx="588.4" cy="64.0" r="3" fill="#c9860a"/>
+<circle cx="616.0" cy="64.0" r="3" fill="#c9860a"/>
+<polygon points="174.4,203.8 312.4,152.5 411.8,99.6 505.6,64.0 588.4,64.0 616.0,64.0 616.0,64.0 588.4,64.0 505.6,115.3 411.8,246.9 312.4,283.7 174.4,307.2" fill="#2c7a47" fill-opacity="0.12" stroke="none"/>
+<polyline class="med" points="174.4,259.3 312.4,218.3 411.8,165.0 505.6,82.1 588.4,64.0 616.0,64.0" stroke="#2c7a47"/>
+<circle cx="174.4" cy="259.3" r="3" fill="#2c7a47"/>
+<circle cx="312.4" cy="218.3" r="3" fill="#2c7a47"/>
+<circle cx="411.8" cy="165.0" r="3" fill="#2c7a47"/>
+<circle cx="505.6" cy="82.1" r="3" fill="#2c7a47"/>
+<circle cx="588.4" cy="64.0" r="3" fill="#2c7a47"/>
+<circle cx="616.0" cy="64.0" r="3" fill="#2c7a47"/>
+<rect x="466" y="69" width="12" height="12" fill="#b3341f" fill-opacity="0.6"/>
+<text class="lab" x="482" y="79">K=1 SKU</text>
+<rect x="466" y="87" width="12" height="12" fill="#c9860a" fill-opacity="0.6"/>
+<text class="lab" x="482" y="97">K=4 SKUs</text>
+<rect x="466" y="105" width="12" height="12" fill="#2c7a47" fill-opacity="0.6"/>
+<text class="lab" x="482" y="115">K=12 SKUs</text>
+<text class="lab" x="340.0" y="388" text-anchor="middle">basis correlation β  (r_i = β²) →</text>
+</svg>

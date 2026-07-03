@@ -115,6 +115,11 @@ class FuturesOrder:
     is_buy: bool  # True = long, False = short
     step: int = 0
     margin: float = 0.0  # coin escrowed at post
+    # Optional SKU label (bd umm §7): partitions the forward book so that only
+    # same-SKU orders are fungible, e.g. region/GPU-variant compute forwards.
+    # "" (default) = the generic per-resource book — byte-identical to pre-SKU
+    # behavior, so existing wood/stone/compute forwards are unaffected.
+    sku: str = ""
 
 
 @dataclass
@@ -147,6 +152,7 @@ class FuturesContract:
     created_epoch: int = 0
     settled_epoch: Optional[int] = None
     settle_spot_price: Optional[float] = None  # spot ref used at settlement
+    sku: str = ""  # SKU label (bd umm §7); "" = generic per-resource book
 
     def to_dict(self) -> Dict:
         return {
@@ -163,6 +169,7 @@ class FuturesContract:
             "created_epoch": self.created_epoch,
             "settled_epoch": self.settled_epoch,
             "settle_spot_price": self.settle_spot_price,
+            "sku": self.sku,
         }
 
 

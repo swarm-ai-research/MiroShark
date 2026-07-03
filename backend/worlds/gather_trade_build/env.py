@@ -60,6 +60,10 @@ class GTBAction:
     # targets this settlement epoch. 0 = unset / not a futures order. The
     # matching book (bd-oo7) reads these; the bare env ignores them.
     settlement_epoch: int = 0
+    # Optional SKU label for futures orders (bd umm §7). "" = the generic
+    # per-resource forward book (unchanged); a non-empty SKU partitions the
+    # book so only same-SKU orders cross (region/GPU-variant compute forwards).
+    sku: str = ""
     # Optional side-channel: place a YES/NO stake on an open prediction
     # market in the same tick. Env ignores these fields; the GTB world
     # service intercepts them after apply_actions and updates a separate
@@ -686,17 +690,23 @@ class GTBEnvironment:
             is_buy=is_buy,
             step=self._current_step,
             margin=margin,
+            sku=action.sku,
         )
         (self._futures_buy_orders if is_buy
          else self._futures_sell_orders).append(order)
         self._spend_energy(worker, self._config.energy_cost_trade)
+        details: Dict[str, Any] = {
+            "side": "long" if is_buy else "short",
+            "resource": action.resource_type.value, "qty": qty,
+            "forward_price": forward,
+            "settlement_epoch": action.settlement_epoch,
+        }
+        if action.sku:
+            details["sku"] = action.sku
         return GTBEvent(
             event_type="futures_order_placed", step=self._current_step,
             epoch=self._current_epoch, agent_id=worker.agent_id,
-            details={"side": "long" if is_buy else "short",
-                     "resource": action.resource_type.value, "qty": qty,
-                     "forward_price": forward,
-                     "settlement_epoch": action.settlement_epoch},
+            details=details,
         )
 
     def _futures_fail(self, worker: WorkerState, reason: str,
@@ -711,8 +721,12 @@ class GTBEnvironment:
         )
 
     @staticmethod
-    def _futures_key(resource: ResourceType, settlement_epoch: int) -> str:
-        return f"{resource.value}@{settlement_epoch}"
+    def _futures_key(resource: ResourceType, settlement_epoch: int,
+                     sku: str = "") -> str:
+        # Byte-identical to the pre-SKU key when sku is "" (the generic book);
+        # a non-empty SKU inserts a ``/<sku>`` segment before the ``@epoch``.
+        base = resource.value if not sku else f"{resource.value}/{sku}"
+        return f"{base}@{settlement_epoch}"
 
     def _match_futures_orders(self) -> List[GTBEvent]:
         """Match crossing futures orders into FuturesContracts.
@@ -724,21 +738,23 @@ class GTBEnvironment:
         margin; settlement is bd-dog.
         """
         events: List[GTBEvent] = []
-        # Distinct (resource, settlement_epoch) buckets present on the book.
+        # Distinct (resource, sku, settlement_epoch) buckets present on the book.
+        # Only same-SKU orders are fungible (bd umm §7); sku="" is the generic
+        # per-resource book, so pre-SKU runs bucket exactly as before.
         buckets = {
-            (o.resource_type, o.settlement_epoch)
+            (o.resource_type, o.sku, o.settlement_epoch)
             for o in self._futures_buy_orders + self._futures_sell_orders
         }
-        for resource, settle in buckets:
+        for resource, sku, settle in buckets:
             buys = sorted(
                 [o for o in self._futures_buy_orders
-                 if o.resource_type == resource
+                 if o.resource_type == resource and o.sku == sku
                  and o.settlement_epoch == settle and o.qty > 1e-12],
                 key=lambda o: -o.forward_price,
             )
             sells = sorted(
                 [o for o in self._futures_sell_orders
-                 if o.resource_type == resource
+                 if o.resource_type == resource and o.sku == sku
                  and o.settlement_epoch == settle and o.qty > 1e-12],
                 key=lambda o: o.forward_price,
             )
@@ -775,23 +791,28 @@ class GTBEnvironment:
                         margin_long=m_long,
                         margin_short=m_short,
                         created_epoch=self._current_epoch,
+                        sku=sku,
                     )
                     self._futures_contracts.append(contract)
                     buy.qty -= qty
                     sell.qty -= qty
-                    key = self._futures_key(resource, settle)
+                    key = self._futures_key(resource, settle, sku)
                     self._last_forward_price[key] = forward
                     self._futures_volume_this_epoch[key] = (
                         self._futures_volume_this_epoch.get(key, 0.0) + qty
                     )
+                    match_details: Dict[str, Any] = {
+                        "contract_id": contract.contract_id,
+                        "resource": resource.value, "qty": qty,
+                        "forward_price": forward,
+                        "settlement_epoch": settle,
+                        "long": buy.agent_id, "short": sell.agent_id}
+                    if sku:
+                        match_details["sku"] = sku
                     events.append(GTBEvent(
                         event_type="futures_matched", step=self._current_step,
                         epoch=self._current_epoch, agent_id=buy.agent_id,
-                        details={"contract_id": contract.contract_id,
-                                 "resource": resource.value, "qty": qty,
-                                 "forward_price": forward,
-                                 "settlement_epoch": settle,
-                                 "long": buy.agent_id, "short": sell.agent_id},
+                        details=match_details,
                     ))
         # Drop fully-filled resting orders.
         self._futures_buy_orders = [o for o in self._futures_buy_orders
@@ -898,8 +919,13 @@ class GTBEnvironment:
             # 2. P&L transfer, clamped so no balance goes negative.
             # ``realized`` is the long's signed P&L; the move is a pure
             # zero-sum coin transfer between the two workers.
-            spot = self._last_trade_price.get(c.resource_type.value,
-                                              c.forward_price)
+            # Per-SKU spot ref if one has been published (bd umm §7 increment 2),
+            # else the generic resource spot, else the forward (zero P&L).
+            resource_spot = self._last_trade_price.get(c.resource_type.value,
+                                                       c.forward_price)
+            spot = (self._last_trade_price.get(
+                        f"{c.resource_type.value}/{c.sku}", resource_spot)
+                    if c.sku else resource_spot)
             pnl = (spot - c.forward_price) * c.qty
             realized = 0.0
             if long_w is not None and short_w is not None:

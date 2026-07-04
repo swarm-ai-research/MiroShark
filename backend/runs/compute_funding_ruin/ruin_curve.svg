@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="400" viewBox="0 0 680 400" font-family="system-ui,sans-serif">
+<style>.t{font-size:14px;font-weight:600}.s{font-size:11px;fill:#666}.lab{font-size:11px;fill:#444}.med{fill:none;stroke-width:2}</style>
+<rect width="680" height="400" fill="#fff"/>
+<text class="t" x="66" y="26">Dealer funding-ruin vs coin buffer (N=200)</text>
+<text class="s" x="66" y="43">β=1 is economically flat at expiry — ruin there is PURE funding risk (zero terminal price risk)</text>
+<line x1="66" y1="334.0" x2="614" y2="334.0" stroke="#eee"/>
+<text class="lab" x="58" y="338.0" text-anchor="end">0%</text>
+<line x1="66" y1="267.0" x2="614" y2="267.0" stroke="#eee"/>
+<text class="lab" x="58" y="271.0" text-anchor="end">25%</text>
+<line x1="66" y1="200.0" x2="614" y2="200.0" stroke="#eee"/>
+<text class="lab" x="58" y="204.0" text-anchor="end">50%</text>
+<line x1="66" y1="133.0" x2="614" y2="133.0" stroke="#eee"/>
+<text class="lab" x="58" y="137.0" text-anchor="end">75%</text>
+<line x1="66" y1="66.0" x2="614" y2="66.0" stroke="#eee"/>
+<text class="lab" x="58" y="70.0" text-anchor="end">100%</text>
+<text class="lab" x="66.0" y="352.0" text-anchor="middle">0.05×</text>
+<text class="lab" x="175.6" y="352.0" text-anchor="middle">0.1×</text>
+<text class="lab" x="285.2" y="352.0" text-anchor="middle">0.2×</text>
+<text class="lab" x="394.8" y="352.0" text-anchor="middle">0.4×</text>
+<text class="lab" x="504.4" y="352.0" text-anchor="middle">0.8×</text>
+<text class="lab" x="614.0" y="352.0" text-anchor="middle">1.6×</text>
+<polyline class="med" points="66.0,277.7 175.6,301.8 285.2,330.0 394.8,334.0 504.4,334.0 614.0,334.0" stroke="#c9860a"/>
+<circle cx="66.0" cy="277.7" r="3" fill="#c9860a"/>
+<circle cx="175.6" cy="301.8" r="3" fill="#c9860a"/>
+<circle cx="285.2" cy="330.0" r="3" fill="#c9860a"/>
+<circle cx="394.8" cy="334.0" r="3" fill="#c9860a"/>
+<circle cx="504.4" cy="334.0" r="3" fill="#c9860a"/>
+<circle cx="614.0" cy="334.0" r="3" fill="#c9860a"/>
+<polyline class="med" points="66.0,232.2 175.6,269.7 285.2,311.2 394.8,334.0 504.4,334.0 614.0,334.0" stroke="#b3341f"/>
+<circle cx="66.0" cy="232.2" r="3" fill="#b3341f"/>
+<circle cx="175.6" cy="269.7" r="3" fill="#b3341f"/>
+<circle cx="285.2" cy="311.2" r="3" fill="#b3341f"/>
+<circle cx="394.8" cy="334.0" r="3" fill="#b3341f"/>
+<circle cx="504.4" cy="334.0" r="3" fill="#b3341f"/>
+<circle cx="614.0" cy="334.0" r="3" fill="#b3341f"/>
+<rect x="464" y="71" width="12" height="12" fill="#c9860a" fill-opacity="0.7"/>
+<text class="lab" x="480" y="81">β=0.8</text>
+<rect x="464" y="89" width="12" height="12" fill="#b3341f" fill-opacity="0.7"/>
+<text class="lab" x="480" y="99">β=1.0 (flat at expiry)</text>
+<text class="lab" x="340.0" y="388" text-anchor="middle">dealer coin buffer ÷ hedge notional  (log) →</text>
+</svg>

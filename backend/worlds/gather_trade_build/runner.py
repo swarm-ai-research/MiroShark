@@ -157,6 +157,20 @@ def _create_policy(
             lot=agent_spec.get("lot", 1.0),
             fair_value=agent_spec.get("fair_value", 1.0),
         )
+    elif ptype == "risk_aware_dealer":
+        from worlds.gather_trade_build.agents import RiskAwareDealerPolicy
+        from worlds.gather_trade_build.entities import ResourceType
+        return RiskAwareDealerPolicy(
+            agent_id, seed=seed,
+            sku=agent_spec.get("sku", "a"),
+            resource=ResourceType(agent_spec.get("resource", "compute")),
+            horizon=agent_spec.get("horizon", 3),
+            base_spread=agent_spec.get("base_spread", 0.05),
+            risk_factor=agent_spec.get("risk_factor", 0.02),
+            hedge_ratio=agent_spec.get("hedge_ratio", 1.0),
+            qty=agent_spec.get("qty", 1.0),
+            fair_value=agent_spec.get("fair_value", 1.0),
+        )
     else:
         logger.warning("Unknown policy type '%s', defaulting to honest", ptype)
         return HonestWorkerPolicy(agent_id, seed=seed)

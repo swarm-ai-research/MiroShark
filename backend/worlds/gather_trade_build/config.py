@@ -143,6 +143,13 @@ class MarketConfig:
     # futures_margin_rate * notional in coin at post time.
     futures_enabled: bool = True
     futures_margin_rate: float = 0.2
+    # Daily (per-epoch) mark-to-market (bd 1z3). False = legacy single-shot cash
+    # settlement at expiry (byte-identical to pre-MTM). True = each epoch, open
+    # contracts are remarked to the current spot and variation margin is
+    # transferred long<->short; a side that cannot fund a margin call is
+    # liquidated at the mark. Enables path-dependent hedging / funding-liquidity
+    # studies (the Pirrong variation-margin-mismatch risk).
+    futures_daily_mtm: bool = False
 
 
 @dataclass
@@ -241,6 +248,7 @@ class GTBConfig:
                 "enabled", "transaction_fee_rate", "price_floor",
                 "price_ceiling", "order_ttl_steps",
                 "futures_enabled", "futures_margin_rate",
+                "futures_daily_mtm",
             ) if k in market_data
         })
 

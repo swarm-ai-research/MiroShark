@@ -148,11 +148,17 @@ class FuturesContract:
     short_agent_id: str
     margin_long: float = 0.0
     margin_short: float = 0.0
-    status: str = "open"  # "open" | "settled"
+    status: str = "open"  # "open" | "settled" | "liquidated"
     created_epoch: int = 0
     settled_epoch: Optional[int] = None
     settle_spot_price: Optional[float] = None  # spot ref used at settlement
     sku: str = ""  # SKU label (bd umm §7); "" = generic per-resource book
+    # Running mark for daily MTM (bd 1z3). Set to forward_price at match; each
+    # MTM epoch advances it to the current spot after transferring variation
+    # margin. Settlement transfers (spot - mark_price)*qty, so when MTM is off
+    # (mark_price never moves off forward_price) this equals the legacy
+    # (spot - forward_price)*qty — byte-identical.
+    mark_price: float = 0.0
 
     def to_dict(self) -> Dict:
         return {
@@ -170,6 +176,7 @@ class FuturesContract:
             "settled_epoch": self.settled_epoch,
             "settle_spot_price": self.settle_spot_price,
             "sku": self.sku,
+            "mark_price": self.mark_price,
         }
 
 

@@ -792,6 +792,7 @@ class GTBEnvironment:
                         margin_short=m_short,
                         created_epoch=self._current_epoch,
                         sku=sku,
+                        mark_price=forward,   # MTM baseline (bd 1z3)
                     )
                     self._futures_contracts.append(contract)
                     buy.qty -= qty
@@ -884,6 +885,86 @@ class GTBEnvironment:
             "basis": basis,
         }
 
+    def _futures_spot_ref(self, c: FuturesContract) -> float:
+        """Current spot reference for a contract: its per-SKU spot if published
+        (bd umm §7), else the generic resource spot, else its running mark
+        (zero incremental P&L). Shared by MTM and settlement."""
+        resource_spot = self._last_trade_price.get(c.resource_type.value,
+                                                   c.mark_price)
+        if c.sku:
+            return self._last_trade_price.get(
+                f"{c.resource_type.value}/{c.sku}", resource_spot)
+        return resource_spot
+
+    def _mark_to_market_futures(self) -> List[GTBEvent]:
+        """Daily (per-epoch) mark-to-market of open, not-yet-expiring contracts
+        (bd 1z3). Each contract is remarked to the current spot and the change
+        in value since its last mark is transferred as **variation margin**
+        long<->short, funded from the payer's *free* coin.
+
+        Liquidation rule: if the losing side cannot fund the full margin call
+        from free coin, it transfers all it can, both initial margins are
+        released, the contract is marked ``liquidated`` and drops out of further
+        MTM/settlement — the winning side bears the shortfall (a realized
+        counterparty loss). Coin is conserved: variation margin is a worker->
+        worker transfer and margin release restores escrow.
+
+        Contracts reaching their settlement epoch are left for
+        ``_settle_futures_contracts`` (which settles the final increment off the
+        same running mark, so there is no double-count)."""
+        events: List[GTBEvent] = []
+        for c in self._futures_contracts:
+            if c.status != "open" or c.settlement_epoch <= self._current_epoch:
+                continue
+            new_mark = self._futures_spot_ref(c)
+            delta = (new_mark - c.mark_price) * c.qty   # +ve: long gains
+            if abs(delta) < 1e-12:
+                c.mark_price = new_mark
+                continue
+            long_w = self._workers.get(c.long_agent_id)
+            short_w = self._workers.get(c.short_agent_id)
+            if long_w is None or short_w is None:
+                c.mark_price = new_mark
+                continue
+            payer, receiver = (short_w, long_w) if delta > 0 else (long_w, short_w)
+            owed = abs(delta)
+            avail = payer.get_resource(ResourceType.COIN)
+            if avail + 1e-9 >= owed:                    # margin call met
+                payer.remove_resource(ResourceType.COIN, owed)
+                receiver.add_resource(ResourceType.COIN, owed)
+                long_gain = delta if delta > 0 else -owed
+                long_w.cumulative_income += long_gain
+                short_w.cumulative_income -= long_gain
+                c.mark_price = new_mark
+            else:                                        # margin call fails -> liquidate
+                paid = avail
+                payer.remove_resource(ResourceType.COIN, paid)
+                receiver.add_resource(ResourceType.COIN, paid)
+                long_gain = paid if delta > 0 else -paid
+                long_w.cumulative_income += long_gain
+                short_w.cumulative_income -= long_gain
+                # Release both initial margins (coin-neutral restore of escrow).
+                if c.margin_long > 0:
+                    long_w.add_resource(ResourceType.COIN, c.margin_long)
+                if c.margin_short > 0:
+                    short_w.add_resource(ResourceType.COIN, c.margin_short)
+                c.margin_long = 0.0
+                c.margin_short = 0.0
+                c.status = "liquidated"
+                c.settled_epoch = self._current_epoch
+                c.settle_spot_price = new_mark
+                c.mark_price = new_mark
+                events.append(GTBEvent(
+                    event_type="futures_liquidated", step=self._current_step,
+                    epoch=self._current_epoch,
+                    agent_id=payer.agent_id,
+                    details={"contract_id": c.contract_id,
+                             "resource": c.resource_type.value,
+                             "margin_call": owed, "paid": paid,
+                             "shortfall": owed - paid,
+                             "mark_price": new_mark}))
+        return events
+
     def _settle_futures_contracts(self) -> List[GTBEvent]:
         """Cash-settle every open contract whose settlement epoch arrived.
 
@@ -920,13 +1001,13 @@ class GTBEnvironment:
             # ``realized`` is the long's signed P&L; the move is a pure
             # zero-sum coin transfer between the two workers.
             # Per-SKU spot ref if one has been published (bd umm §7 increment 2),
-            # else the generic resource spot, else the forward (zero P&L).
-            resource_spot = self._last_trade_price.get(c.resource_type.value,
-                                                       c.forward_price)
-            spot = (self._last_trade_price.get(
-                        f"{c.resource_type.value}/{c.sku}", resource_spot)
-                    if c.sku else resource_spot)
-            pnl = (spot - c.forward_price) * c.qty
+            # else the generic resource spot, else the running mark (zero P&L).
+            spot = self._futures_spot_ref(c)
+            # Settle the *remaining* move since the last mark. With MTM off the
+            # mark never leaves forward_price, so this is the legacy
+            # (spot - forward)*qty; with MTM on, the path P&L was already
+            # transferred, so this is just the final increment.
+            pnl = (spot - c.mark_price) * c.qty
             realized = 0.0
             if long_w is not None and short_w is not None:
                 if pnl >= 0:  # long wins, short pays (clamped to short's coin)
@@ -1282,6 +1363,11 @@ class GTBEnvironment:
         # epoch has arrived unmatched (bd-oo7), before taxes.
         if self._config.market.futures_enabled:
             events.extend(self._refund_expired_futures_orders())
+            # 0a1. Daily mark-to-market (bd 1z3): transfer variation margin on
+            # open, not-yet-expiring contracts and liquidate underfunded sides,
+            # before the expiring ones settle their final increment.
+            if self._config.market.futures_daily_mtm:
+                events.extend(self._mark_to_market_futures())
             # 0a2. Cash-settle contracts reaching their settlement epoch
             # (bd-dog): release margins + transfer (spot - forward)*qty
             # short->long. Before the snapshot so settled coin is captured.

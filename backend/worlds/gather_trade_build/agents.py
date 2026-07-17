@@ -952,3 +952,107 @@ class MatchedHedgerPolicy(GTBWorkerPolicy):
             return GTBAction(agent_id=self.agent_id,
                              action_type=GTBActionType.MOVE, direction=direction)
         return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.GATHER)
+
+
+class RiskAwareDealerPolicy(GTBWorkerPolicy):
+    """SKU forward dealer that prices off inventory and hedges the basket
+    (bd umm §7.3). The emergent-participation dealer from the compute basis-risk
+    study, running through the *real* order book.
+
+    Each step it does one of three things, rotating:
+
+    - **quote a SKU bid** (FUTURES_BUY on ``sku``) at ``anchor·(1 − spread)``,
+    - **quote a SKU ask** (FUTURES_SELL on ``sku``) at ``anchor·(1 + spread)``,
+    - **hedge** its net SKU inventory on the *generic* basket book toward
+      ``−hedge_ratio·net_sku`` (short basket when net-long SKU, and vice versa).
+
+    The half-spread widens with the residual it must warehouse:
+    ``spread = base_spread + risk_factor·|net_sku|`` — so as the dealer
+    accumulates a one-sided book (little to net) it quotes wider, exactly the
+    phase-1 mechanism. ``risk_factor`` bundles the dealer's risk aversion and the
+    basis residual (∝ 1 − r_i): a worse basis (lower β) means a larger
+    ``risk_factor`` for the same inventory. Inventory and the hedge target are
+    read from ``own_futures_position`` in obs — the dealer sees its real book.
+
+    Routing (§7.4) is a scenario convention: dealers run this policy (SKU + basket
+    books); principals only cross the SKU book (e.g. FuturesTakerPolicy on the
+    SKU), never the basket.
+    """
+
+    def __init__(self, agent_id: str, seed=None, sku: str = "a",
+                 resource: ResourceType = ResourceType.COMPUTE,
+                 horizon: int = 3, base_spread: float = 0.05,
+                 risk_factor: float = 0.02, hedge_ratio: float = 1.0,
+                 qty: float = 1.0, fair_value: float = 1.0,
+                 max_spread: float = 0.9) -> None:
+        super().__init__(agent_id, seed)
+        self._sku = sku
+        self._resource = resource
+        self._horizon = horizon
+        self._base_spread = base_spread
+        self._risk_factor = risk_factor
+        self._hedge_ratio = hedge_ratio
+        self._qty = qty
+        self._fair_value = fair_value
+        self._max_spread = max_spread
+
+    def _anchor(self, obs: dict) -> float:
+        info = (obs.get("market_info") or {}).get(self._resource.value) or {}
+        last = info.get("last_price")
+        return last if last and last > 0 else self._fair_value
+
+    def _net(self, obs: dict, prefix: str) -> float:
+        """Net signed position summed over books whose key starts with ``prefix``."""
+        pos = obs.get("own_futures_position") or {}
+        return sum(v for k, v in pos.items() if k.startswith(prefix))
+
+    def _basket_cross_price(self, obs: dict, settle: int, buy: bool):
+        """Best crossable price on the generic basket book, if any."""
+        key = f"{self._resource.value}@{settle}"
+        entry = (obs.get("futures_curve") or {}).get(key) or {}
+        return entry.get("best_ask") if buy else entry.get("best_bid")
+
+    def decide(self, obs: dict) -> GTBAction:
+        if obs.get("frozen"):
+            return GTBAction(agent_id=self.agent_id, action_type=GTBActionType.NOOP)
+        step = obs.get("step", 0)
+        epoch = obs.get("epoch", 0)
+        settle = epoch + self._horizon
+        anchor = self._anchor(obs)
+
+        # Net SKU inventory (over all delivery dates) and current basket hedge.
+        net_sku = self._net(obs, f"{self._resource.value}/{self._sku}@")
+        net_basket = self._net(obs, f"{self._resource.value}@")
+
+        phase = step % 3
+        if phase == 2:
+            # Hedge: drive the basket position toward -hedge_ratio * net_sku.
+            target = -self._hedge_ratio * net_sku
+            gap = target - net_basket
+            if abs(gap) >= 1e-6:
+                buy = gap > 0
+                price = self._basket_cross_price(obs, settle, buy)
+                if price is None:                       # no resting book: post at spot
+                    price = anchor
+                return GTBAction(
+                    agent_id=self.agent_id,
+                    action_type=(GTBActionType.FUTURES_BUY if buy
+                                 else GTBActionType.FUTURES_SELL),
+                    resource_type=self._resource,
+                    quantity=min(self._qty, abs(gap)),
+                    price=price, settlement_epoch=settle)  # generic basket book
+
+        # Quote a SKU forward. Half-spread widens with warehoused inventory.
+        spread = min(self._max_spread,
+                     self._base_spread + self._risk_factor * abs(net_sku))
+        if phase == 0:
+            return GTBAction(
+                agent_id=self.agent_id, action_type=GTBActionType.FUTURES_BUY,
+                resource_type=self._resource, quantity=self._qty,
+                price=anchor * (1.0 - spread), settlement_epoch=settle,
+                sku=self._sku)
+        return GTBAction(
+            agent_id=self.agent_id, action_type=GTBActionType.FUTURES_SELL,
+            resource_type=self._resource, quantity=self._qty,
+            price=anchor * (1.0 + spread), settlement_epoch=settle,
+            sku=self._sku)

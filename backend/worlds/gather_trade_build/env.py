@@ -260,33 +260,63 @@ class GTBEnvironment:
             # within the same price. Empty lists if no orders on that
             # side. Policies that don't read the order book ignore this.
             "market_book": self._market_book_snapshot(),
-            # Forward curve: per (resource, settlement_epoch) best bid/ask
+            # Forward curve: per (resource[/sku], settlement_epoch) best bid/ask
             # and last forward print (bd-oo7). Empty when futures disabled.
             "futures_curve": self._futures_curve(),
+            # This agent's signed net forward position per book (bd umm §7.3):
+            # +qty long, -qty short, from its open contracts. Lets a dealer see
+            # the inventory it must price/hedge. Empty for agents with no
+            # positions; policies that ignore it are unaffected.
+            "own_futures_position": self._own_futures_position(agent_id),
         }
 
+    def _own_futures_position(self, agent_id: str) -> Dict[str, float]:
+        """Signed net open-forward position for ``agent_id`` keyed like the
+        forward curve (``<resource>[/<sku>]@<epoch>``): + long, − short."""
+        pos: Dict[str, float] = {}
+        for c in self._futures_contracts:
+            if c.status != "open":
+                continue
+            side = 0.0
+            if c.long_agent_id == agent_id:
+                side = c.qty
+            elif c.short_agent_id == agent_id:
+                side = -c.qty
+            else:
+                continue
+            key = self._futures_key(c.resource_type, c.settlement_epoch, c.sku)
+            pos[key] = pos.get(key, 0.0) + side
+        return pos
+
     def _futures_curve(self) -> Dict[str, Dict[str, Any]]:
-        """Forward-curve snapshot keyed by ``resource@settlement_epoch``.
+        """Forward-curve snapshot keyed by ``<resource>[/<sku>]@<epoch>``.
 
         Per bucket: best bid (highest long), best ask (lowest short), last
-        traded forward, and resting order counts. The basis vs spot
-        (forward - spot) is left to consumers, who have ``market_info``.
+        traded forward, and resting order counts. SKU-aware (bd umm §7.3): a
+        SKU-specific forward book gets its own bucket with a ``sku`` field;
+        generic (sku="") buckets keep the plain ``resource@epoch`` key so
+        pre-SKU consumers are unaffected. The basis vs spot is left to
+        consumers, who have ``market_info``.
         """
         curve: Dict[str, Dict[str, Any]] = {}
         keys = {
-            self._futures_key(o.resource_type, o.settlement_epoch)
+            self._futures_key(o.resource_type, o.settlement_epoch, o.sku)
             for o in self._futures_buy_orders + self._futures_sell_orders
         }
         keys.update(self._last_forward_price.keys())
         for key in keys:
-            res_val, _, settle_s = key.partition("@")
+            left, _, settle_s = key.partition("@")
+            res_val, _, sku = left.partition("/")   # sku="" when no "/" present
             settle = int(settle_s) if settle_s else 0
             bids = [o.forward_price for o in self._futures_buy_orders
-                    if self._futures_key(o.resource_type, o.settlement_epoch) == key]
+                    if self._futures_key(o.resource_type, o.settlement_epoch,
+                                         o.sku) == key]
             asks = [o.forward_price for o in self._futures_sell_orders
-                    if self._futures_key(o.resource_type, o.settlement_epoch) == key]
+                    if self._futures_key(o.resource_type, o.settlement_epoch,
+                                         o.sku) == key]
             curve[key] = {
                 "resource": res_val,
+                "sku": sku,
                 "settlement_epoch": settle,
                 "best_bid": max(bids) if bids else None,
                 "best_ask": min(asks) if asks else None,

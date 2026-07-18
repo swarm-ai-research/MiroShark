@@ -35,11 +35,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 RUN_EVENTS_FILENAME = "run_events.jsonl"
 EVENT_SCHEMA_V1 = "miroshark.run_event.v1"
@@ -185,6 +186,54 @@ class RunEventLog:
             resume=resume,
         )
 
+    def tail(
+        self,
+        *,
+        start_seq: int = 0,
+        poll_interval: float = 0.5,
+        stop: Optional[Callable[[], bool]] = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> Iterator[Optional[EventEnvelope]]:
+        """Follow the log live: replay from ``start_seq``, then poll for more.
+
+        Yields :class:`EventEnvelope` for each new event and ``None`` once per
+        idle poll cycle (so callers can interleave heartbeats without a second
+        thread). ``seq`` numbering matches :meth:`iter_envelopes` exactly —
+        corrupt lines are skipped without consuming a seq. Only complete
+        (newline-terminated) lines are consumed; a torn tail stays buffered
+        until the writer heals it. Runs until ``stop()`` returns true.
+        """
+
+        next_seq = 0
+        pos = 0
+        while True:
+            emitted = False
+            if self.path.exists():
+                with self.path.open("rb") as f:
+                    f.seek(pos)
+                    chunk = f.read()
+                # Consume only complete lines; leave a torn tail in place.
+                end = chunk.rfind(b"\n")
+                if end >= 0:
+                    for raw in chunk[:end].split(b"\n"):
+                        pos += len(raw) + 1
+                        if not raw.strip():
+                            continue
+                        try:
+                            event = RunEvent.from_dict(json.loads(raw))
+                        except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+                            continue
+                        seq = next_seq
+                        next_seq += 1
+                        if seq >= start_seq:
+                            emitted = True
+                            yield EventEnvelope(seq=seq, event=event)
+            if stop is not None and stop():
+                return
+            if not emitted:
+                yield None
+                sleep(poll_interval)
+
 
 # ---------------------------------------------------------------------------
 # projection (fold events -> current run state)
@@ -303,6 +352,63 @@ class RunProjectionReducer:
             state = self.apply(state, envelope)
             last_seq = envelope.seq
         return state, Checkpoint(last_seq=last_seq, state=state.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# SSE streaming (consumed by the /events/stream route + watch page)
+# ---------------------------------------------------------------------------
+TERMINAL_EVENTS = frozenset({EVENT_RUN_COMPLETED, EVENT_RUN_STOPPED, EVENT_RUN_FAILED})
+
+
+def sse_stream(
+    sim_dir: Path | str,
+    *,
+    start_seq: int = 0,
+    poll_interval: float = 0.5,
+    heartbeat_interval: float = 15.0,
+    stop: Optional[Callable[[], bool]] = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Iterator[str]:
+    """Yield the run's event stream as Server-Sent-Events wire chunks.
+
+    Replays from ``start_seq`` (pass ``Last-Event-ID + 1`` on reconnect so
+    EventSource resumes exactly where it left off), then follows the log
+    live. Each event chunk carries ``id: <seq>`` — the browser stores it and
+    sends it back as ``Last-Event-ID`` on auto-reconnect, so a dropped
+    connection (or a gunicorn worker timeout) is seamless. Heartbeat chunks
+    keep intermediaries from closing the idle connection. The stream ends
+    after a terminal event (completed / stopped / failed) — for already-
+    finished sims the client gets one full replay and a clean close.
+    """
+
+    log = RunEventLog(sim_dir)
+    # Reconnect-after-terminal guard: EventSource auto-reconnects with
+    # Last-Event-ID after we close a finished stream. If the run is already
+    # terminal and the client has every event, close again immediately —
+    # otherwise the reconnect would tail a dead log forever.
+    projection, checkpoint = log.project()
+    if projection.status in ("completed", "stopped", "failed") and start_seq > checkpoint.last_seq:
+        yield 'event: stream_end\ndata: {"reason": "run already finished"}\n\n'
+        return
+
+    last_beat = clock()
+    for item in log.tail(
+        start_seq=start_seq, poll_interval=poll_interval, stop=stop, sleep=sleep
+    ):
+        if item is not None:
+            payload = {"seq": item.seq, **item.event.to_dict()}
+            yield (
+                f"id: {item.seq}\n"
+                f"event: {item.event.event}\n"
+                f"data: {json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n\n"
+            )
+            if item.event.event in TERMINAL_EVENTS:
+                return
+        now = clock()
+        if now - last_beat >= heartbeat_interval:
+            yield 'event: heartbeat\ndata: {}\n\n'
+            last_beat = now
 
 
 # ---------------------------------------------------------------------------

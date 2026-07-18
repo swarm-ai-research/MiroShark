@@ -426,6 +426,7 @@ def _broadcast_js() -> str:
     return r"""
 (function () {
   var POLL_MS = 15000;        // matches the run-status polling cadence used by the SPA
+  var SSE_FALLBACK_POLL_MS = 60000;  // safety-net cadence while the SSE stream is live
   var FAILED_BACKOFF_MS = 60000;
   var ABSOLUTE_TIMEOUT_MS = 6 * 60 * 60 * 1000;  // give up after 6h of polling — the runner caps far below this
   var TERMINAL = { completed: true, failed: true, stopped: true };
@@ -668,7 +669,8 @@ def _broadcast_js() -> str:
         setTimeout(function () { if (!isHidden()) refresh(); }, 4000);
         return;
       }
-      var delay = (snapshot && snapshot.runner_status === 'failed') ? FAILED_BACKOFF_MS : POLL_MS;
+      var base = sseLive ? SSE_FALLBACK_POLL_MS : POLL_MS;
+      var delay = (snapshot && snapshot.runner_status === 'failed') ? FAILED_BACKOFF_MS : base;
       schedule(delay);
     }, function () {
       schedule(POLL_MS);
@@ -681,6 +683,68 @@ def _broadcast_js() -> str:
   }
   // Stagger the first poll so the page paints before the network call.
   schedule(1500);
+
+  // ── SSE fast path ──────────────────────────────────────────────────
+  // The backend streams the sim's unified RunEvent log at
+  // /api/simulation/<id>/events/stream. Each lifecycle event triggers an
+  // immediate (coalesced) refresh, so the page updates within ~1s of a
+  // state change instead of waiting out the poll interval. Polling stays
+  // on as the safety net: demoted to SSE_FALLBACK_POLL_MS while the
+  // stream is live, restored to POLL_MS if the stream errors. Browsers
+  // without EventSource just keep the original polling behavior.
+  var sseLive = false;
+  (function () {
+    if (typeof EventSource === 'undefined') return;
+    var es;
+    try {
+      es = new EventSource('/api/simulation/' + encodeURIComponent(simId) + '/events/stream');
+    } catch (err) { return; }
+    var refreshTimer = null;
+    function sseRefresh() {
+      // Coalesce bursts (round_end + platform_completed + run.completed
+      // can arrive in one poll cycle) into a single fetch.
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(function () {
+        refreshTimer = null;
+        if (!isHidden()) refresh();
+      }, 400);
+    }
+    var RUN_EVENTS = [
+      'run.prepare_started', 'run.prepare_completed', 'run.started',
+      'run.running', 'round.started', 'round.completed',
+      'platform.completed'
+    ];
+    for (var i = 0; i < RUN_EVENTS.length; i++) {
+      es.addEventListener(RUN_EVENTS[i], sseRefresh);
+    }
+    var TERMINAL_EVENTS = ['run.completed', 'run.stopped', 'run.failed'];
+    function sseTerminal() {
+      // Deliberate close: without it EventSource auto-reconnects into the
+      // finished stream forever. The refresh pulls the final snapshot and
+      // the poll loop's own terminal detection winds polling down.
+      sseLive = false;
+      sseRefresh();
+      es.close();
+    }
+    for (var j = 0; j < TERMINAL_EVENTS.length; j++) {
+      es.addEventListener(TERMINAL_EVENTS[j], sseTerminal);
+    }
+    es.addEventListener('stream_end', sseTerminal);
+    es.onopen = function () { sseLive = true; };
+    es.addEventListener('no_stream', function () {
+      // Pre-stream sim: nothing will ever arrive here; stay on polling.
+      sseLive = false;
+      es.close();
+    });
+    es.onerror = function () {
+      // The server closes the stream after a terminal event — that lands
+      // here too. Either way: fall back to the polling cadence (the poll
+      // loop's own terminal detection stops it after the last refresh).
+      sseLive = false;
+      es.close();
+      schedule(0);
+    };
+  })();
 })();
 """
 

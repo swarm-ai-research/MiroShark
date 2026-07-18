@@ -677,6 +677,35 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SuccessEnvelope" }
 
+  /api/simulation/{simulation_id}/events/stream:
+    get:
+      tags: [Live State]
+      summary: SSE stream of the sim's unified RunEvent lifecycle log.
+      description: >
+        Server-Sent Events replacement for polling `/run-status` +
+        `/embed-summary` (both remain available). Replays
+        `run_events.jsonl` from `start_seq`, then follows it live. Each
+        chunk carries `id: <seq>` so EventSource auto-reconnect resumes
+        via the `Last-Event-ID` header; heartbeats are emitted every 15s;
+        the stream closes after a terminal event
+        (`run.completed` / `run.stopped` / `run.failed`). Sims without a
+        run-event log get a single `no_stream` event and a clean close.
+      parameters:
+        - $ref: "#/components/parameters/SimulationIdPath"
+        - name: start_seq
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+          description: Replay from this 0-indexed event seq (Last-Event-ID wins when present).
+      responses:
+        "200":
+          description: text/event-stream of RunEvent lifecycle messages.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404":
+          description: Simulation not found.
+
   /api/simulation/{simulation_id}/run-status:
     get:
       tags: [Live State]

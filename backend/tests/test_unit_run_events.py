@@ -244,3 +244,159 @@ def test_repro_export_lineage_prefers_event_stream(tmp_path):
         str(tmp_path),
     )
     assert blob["lineage"]["parent_simulation_id"] == "sim_evtparent000"
+
+
+# ---------------------------------------------------------------------------
+# live tailing + SSE stream (u5fv.4)
+# ---------------------------------------------------------------------------
+def _drain(gen, n):
+    """Pull up to n non-None items from a tail/stream generator."""
+    out = []
+    for item in gen:
+        if item is not None:
+            out.append(item)
+        if len(out) >= n:
+            break
+    return out
+
+
+def test_tail_replays_then_picks_up_live_appends(tmp_path):
+    emit(tmp_path, SIM, EVENT_RUN_CREATED)
+    log = RunEventLog(tmp_path)
+
+    appended = {"done": False}
+
+    def fake_sleep(_):
+        # First idle cycle: append a new event mid-tail.
+        if not appended["done"]:
+            emit(tmp_path, SIM, EVENT_RUN_STARTED)
+            appended["done"] = True
+
+    gen = log.tail(sleep=fake_sleep)
+    got = _drain(gen, 2)
+    assert [(e.seq, e.event.event) for e in got] == [
+        (0, EVENT_RUN_CREATED),
+        (1, EVENT_RUN_STARTED),
+    ]
+
+
+def test_tail_respects_start_seq_and_skips_torn_tail(tmp_path):
+    emit(tmp_path, SIM, EVENT_RUN_CREATED)
+    emit(tmp_path, SIM, EVENT_RUN_STARTED)
+    log = RunEventLog(tmp_path)
+    with log.path.open("a") as f:
+        f.write('{"torn')  # incomplete line, no newline
+
+    stops = {"n": 0}
+
+    def stop():
+        stops["n"] += 1
+        return stops["n"] > 2
+
+    got = [e for e in log.tail(start_seq=1, stop=stop) if e is not None]
+    # Only the complete event at seq 1; the torn tail is never consumed.
+    assert [(e.seq, e.event.event) for e in got] == [(1, EVENT_RUN_STARTED)]
+
+
+def test_sse_stream_formats_chunks_and_closes_on_terminal(tmp_path):
+    _lifecycle(tmp_path, rounds=1)
+    chunks = list(run_events.sse_stream(tmp_path))  # terminal event ends it
+
+    assert chunks[0].startswith("id: 0\nevent: run.created\n")
+    payload = json.loads(chunks[0].split("data: ", 1)[1].strip())
+    assert payload["seq"] == 0
+    assert payload["simulation_id"] == SIM
+    # Last chunk is the terminal event; generator returned by itself.
+    assert "event: run.completed\n" in chunks[-1]
+
+
+def test_sse_stream_resumes_from_start_seq(tmp_path):
+    _lifecycle(tmp_path, rounds=1)
+    chunks = list(run_events.sse_stream(tmp_path, start_seq=7))
+    assert chunks[0].startswith("id: 7\n")
+
+
+def test_sse_stream_reconnect_after_terminal_closes_immediately(tmp_path):
+    _lifecycle(tmp_path, rounds=1)
+    _, checkpoint = RunEventLog(tmp_path).project()
+
+    # Simulate EventSource auto-reconnect with Last-Event-ID at the tip.
+    chunks = list(run_events.sse_stream(tmp_path, start_seq=checkpoint.last_seq + 1))
+    assert len(chunks) == 1
+    assert chunks[0].startswith("event: stream_end\n")
+
+
+def test_sse_stream_emits_heartbeats_while_idle(tmp_path):
+    emit(tmp_path, SIM, EVENT_RUN_CREATED)  # non-terminal: stream stays open
+
+    clock = {"t": 0.0}
+    stops = {"n": 0}
+
+    def fake_clock():
+        return clock["t"]
+
+    def fake_sleep(_):
+        clock["t"] += 20.0  # each idle cycle jumps past heartbeat_interval
+
+    def stop():
+        stops["n"] += 1
+        return stops["n"] > 3
+
+    chunks = list(run_events.sse_stream(
+        tmp_path, clock=fake_clock, sleep=fake_sleep, stop=stop,
+    ))
+    assert any(c.startswith("event: heartbeat\n") for c in chunks)
+
+
+def test_watch_page_wires_eventsource_with_polling_fallback():
+    from app.services.watch_renderer import _broadcast_js
+
+    js = _broadcast_js()
+    assert "/events/stream" in js
+    assert "EventSource" in js
+    # Polling stays functional: demoted while SSE is live, restored on error.
+    assert "SSE_FALLBACK_POLL_MS" in js
+    assert "POLL_MS = 15000" in js
+    # Terminal events close the stream deliberately (no reconnect loop).
+    assert "run.completed" in js and "es.close()" in js
+
+
+def test_sse_route_streams_finished_sim_over_http(tmp_path, monkeypatch):
+    """Full HTTP path: mount simulation_bp, stream a finished sim's log."""
+    from flask import Flask
+
+    from app.config import Config
+
+    sims_root = tmp_path / "sims"
+    sim_dir = sims_root / SIM
+    sim_dir.mkdir(parents=True)
+    _lifecycle(sim_dir, rounds=1)
+    monkeypatch.setattr(Config, "WONDERWALL_SIMULATION_DATA_DIR", str(sims_root))
+
+    from app.api import simulation_bp
+
+    app = Flask(__name__)
+    app.register_blueprint(simulation_bp, url_prefix="/api/simulation")
+    client = app.test_client()
+
+    resp = client.get(f"/api/simulation/{SIM}/events/stream")
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/event-stream"
+    body = resp.get_data(as_text=True)  # terminal event closes the stream
+    assert "event: run.created" in body
+    assert "event: run.completed" in body
+    assert "id: 0" in body
+
+    # Reconnect with Last-Event-ID at the tip → immediate clean close.
+    resp2 = client.get(
+        f"/api/simulation/{SIM}/events/stream",
+        headers={"Last-Event-ID": "10"},
+    )
+    assert "event: stream_end" in resp2.get_data(as_text=True)
+
+    # Unknown sim → 404; pre-stream sim dir → single no_stream event.
+    assert client.get("/api/simulation/sim_ffffffffffff/events/stream").status_code == 404
+    bare = sims_root / "sim_barebones000"
+    bare.mkdir()
+    resp3 = client.get("/api/simulation/sim_barebones000/events/stream")
+    assert "event: no_stream" in resp3.get_data(as_text=True)

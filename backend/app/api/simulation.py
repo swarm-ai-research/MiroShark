@@ -3451,6 +3451,58 @@ def get_run_status(simulation_id: str):
         }), 500
 
 
+@simulation_bp.route('/<simulation_id>/events/stream', methods=['GET'])
+def stream_run_events(simulation_id: str):
+    """SSE stream of the sim's unified RunEvent lifecycle log.
+
+    Event-driven replacement for the watch page's 15s polling of
+    ``/run-status`` + ``/embed-summary`` (both remain — this endpoint is
+    additive; polling is the documented fallback). Replays the sim's
+    ``run_events.jsonl`` from ``start_seq`` and then follows it live:
+
+    - each chunk is ``id: <seq>`` / ``event: <run.event name>`` / JSON data,
+      so EventSource auto-reconnect resumes via ``Last-Event-ID``;
+    - heartbeats every 15s keep intermediaries from dropping the connection;
+    - the stream closes after a terminal event (completed/stopped/failed) —
+      already-finished sims get one full replay and a clean close.
+
+    Query params: ``start_seq`` (default 0; ``Last-Event-ID`` header wins
+    when present, resuming from the seq after it).
+    """
+    from flask import Response, stream_with_context
+
+    from ..services.run_events import RUN_EVENTS_FILENAME, sse_stream
+
+    sim_dir = os.path.join(Config.WONDERWALL_SIMULATION_DATA_DIR, simulation_id)
+    if not os.path.isdir(sim_dir):
+        return jsonify({"success": False, "error": "Simulation not found"}), 404
+
+    last_event_id = request.headers.get('Last-Event-ID')
+    if last_event_id is not None:
+        try:
+            start_seq = int(last_event_id) + 1
+        except ValueError:
+            start_seq = 0
+    else:
+        start_seq = request.args.get('start_seq', default=0, type=int) or 0
+
+    # Pre-stream sims have no run_events.jsonl and never will while idle;
+    # tell the client immediately instead of holding a silent connection.
+    has_log = os.path.exists(os.path.join(sim_dir, RUN_EVENTS_FILENAME))
+
+    def generate():
+        if not has_log:
+            yield 'event: no_stream\ndata: {"reason": "no run_events.jsonl for this simulation"}\n\n'
+            return
+        yield from sse_stream(sim_dir, start_seq=max(0, start_seq))
+
+    resp = Response(stream_with_context(generate()), mimetype='text/event-stream')
+    resp.headers['Cache-Control'] = 'no-cache'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    resp.headers['Connection'] = 'keep-alive'
+    return resp
+
+
 @simulation_bp.route('/<simulation_id>/run-status/detail', methods=['GET'])
 def get_run_status_detail(simulation_id: str):
     """

@@ -3503,6 +3503,64 @@ def stream_run_events(simulation_id: str):
     return resp
 
 
+def _checkpoint_repo_dir() -> str:
+    """Dedicated bare repo for checkpoint branches (audit/recovery).
+
+    Lives beside the simulations directory by default; override with
+    MIROSHARK_CHECKPOINT_REPO for an off-volume audit target.
+    """
+    configured = os.environ.get("MIROSHARK_CHECKPOINT_REPO")
+    if configured:
+        return configured
+    from ..services.checkpoint_export import DEFAULT_REPO_DIRNAME
+
+    data_dir = Config.WONDERWALL_SIMULATION_DATA_DIR.rstrip("/")
+    return os.path.join(os.path.dirname(data_dir), DEFAULT_REPO_DIRNAME)
+
+
+@simulation_bp.route('/<simulation_id>/checkpoint', methods=['POST'])
+@require_admin_token
+def create_checkpoint(simulation_id: str):
+    """Snapshot the sim's JSON state to its checkpoint/<sim_id> git branch.
+
+    Audit/disaster-recovery feature, NOT version control: state files are
+    committed as opaque JSON blobs (belief state is never diffed as code).
+    Body (optional JSON): {"label": "before-counterfactual"}.
+    Restore with ``checkpoint_export.import_checkpoint`` (see the service
+    docstring) — restores never happen implicitly.
+    """
+    from ..services.checkpoint_export import export_checkpoint
+
+    sim_dir = os.path.join(Config.WONDERWALL_SIMULATION_DATA_DIR, simulation_id)
+    if not os.path.isdir(sim_dir):
+        return jsonify({"success": False, "error": "Simulation not found"}), 404
+    payload = request.get_json(silent=True) or {}
+    label = str(payload.get("label") or "")[:80]
+    try:
+        result = export_checkpoint(
+            sim_dir, simulation_id, _checkpoint_repo_dir(), label=label
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    except Exception as exc:
+        logger.error(f"checkpoint export failed: {simulation_id}: {exc}")
+        return jsonify({"success": False, "error": "checkpoint export failed"}), 500
+    return jsonify({"success": True, "data": result})
+
+
+@simulation_bp.route('/<simulation_id>/checkpoints', methods=['GET'])
+def get_checkpoints(simulation_id: str):
+    """List the sim's checkpoint history (oldest first)."""
+    from ..services.checkpoint_export import list_checkpoints
+
+    try:
+        entries = list_checkpoints(simulation_id, _checkpoint_repo_dir())
+    except Exception as exc:
+        logger.error(f"checkpoint list failed: {simulation_id}: {exc}")
+        return jsonify({"success": False, "error": "checkpoint list failed"}), 500
+    return jsonify({"success": True, "data": {"checkpoints": entries}})
+
+
 @simulation_bp.route('/<simulation_id>/run-status/detail', methods=['GET'])
 def get_run_status_detail(simulation_id: str):
     """

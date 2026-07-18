@@ -706,6 +706,48 @@ paths:
         "404":
           description: Simulation not found.
 
+  /api/simulation/{simulation_id}/checkpoint:
+    post:
+      tags: [Live State]
+      summary: Snapshot sim state to its checkpoint/<sim_id> git branch.
+      description: >
+        Audit/disaster-recovery feature, not version control: the sim's JSON
+        state artifacts are committed as opaque blobs to a branch-per-sim in
+        a dedicated bare repository (fabro-checkpoint pattern). Requires the
+        admin bearer token. Restores are explicit and operator-driven via
+        `checkpoint_export.import_checkpoint` — never implicit.
+      security:
+        - AdminToken: []
+      parameters:
+        - $ref: "#/components/parameters/SimulationIdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string, maxLength: 80 }
+      responses:
+        "200":
+          description: Checkpoint committed.
+        "401":
+          description: Missing/invalid admin token.
+        "404":
+          description: Simulation not found.
+        "409":
+          description: Nothing snapshot-able in the sim directory yet.
+
+  /api/simulation/{simulation_id}/checkpoints:
+    get:
+      tags: [Live State]
+      summary: List a sim's checkpoint history (oldest first).
+      parameters:
+        - $ref: "#/components/parameters/SimulationIdPath"
+      responses:
+        "200":
+          description: Checkpoint commits with timestamps and subjects.
+
   /api/simulation/{simulation_id}/run-status:
     get:
       tags: [Live State]

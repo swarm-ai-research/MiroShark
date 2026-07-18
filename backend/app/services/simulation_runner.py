@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..storage.graph_storage import GraphStorage
 
 from ..utils.logger import get_logger
+from . import run_events
 from ..utils.validation import validate_simulation_id
 from .graph_memory_updater import GraphMemoryManager
 from .simulation_ipc import SimulationIPCClient
@@ -403,6 +404,10 @@ class SimulationRunner:
         )
         
         cls._save_run_state(state)
+        run_events.emit(
+            os.path.join(cls.RUN_STATE_DIR, simulation_id), simulation_id,
+            run_events.EVENT_RUN_STARTED, total_rounds=total_rounds,
+        )
         
         # If graph memory update is enabled, create updater
         if enable_graph_memory_update:
@@ -548,6 +553,8 @@ class SimulationRunner:
             state.runner_status = RunnerStatus.RUNNING
             cls._processes[simulation_id] = process
             cls._save_run_state(state)
+            run_events.emit(sim_dir, simulation_id, run_events.EVENT_RUN_RUNNING,
+                            pid=process.pid)
             
             # Start monitor thread
             monitor_thread = threading.Thread(
@@ -564,6 +571,10 @@ class SimulationRunner:
             state.runner_status = RunnerStatus.FAILED
             state.error = str(e)
             cls._save_run_state(state)
+            run_events.emit(
+                os.path.join(cls.RUN_STATE_DIR, simulation_id), simulation_id,
+                run_events.EVENT_RUN_FAILED, error=str(e)[:500], phase="start",
+            )
             raise
         
         return state
@@ -635,6 +646,9 @@ class SimulationRunner:
                 state.runner_status = RunnerStatus.COMPLETED
                 state.completed_at = datetime.now().isoformat()
                 logger.info(f"Simulation completed: {simulation_id}")
+                run_events.emit(sim_dir, simulation_id,
+                                run_events.EVENT_RUN_COMPLETED,
+                                source="process_exit", exit_code=exit_code)
 
                 # Fire browser push notification to any subscribed clients
                 try:
@@ -731,6 +745,10 @@ class SimulationRunner:
                     logger.debug(f"Could not read error info from {main_log_path}: {e}")
                 state.error = f"Process exit code: {exit_code}, error: {error_info}"
                 logger.error(f"Simulation failed: {simulation_id}, error={state.error}")
+                run_events.emit(sim_dir, simulation_id,
+                                run_events.EVENT_RUN_FAILED,
+                                error=state.error[:500], phase="run",
+                                exit_code=exit_code)
 
                 # Fire outbound webhook for the failure path too — operators
                 # who hooked Slack/Discord want to know either way.
@@ -810,6 +828,9 @@ class SimulationRunner:
             state.runner_status = RunnerStatus.FAILED
             state.error = str(e)
             cls._save_run_state(state)
+            run_events.emit(sim_dir, simulation_id,
+                            run_events.EVENT_RUN_FAILED,
+                            error=str(e)[:500], phase="monitor")
         
         finally:
             # Stop graph memory updater
@@ -893,6 +914,14 @@ class SimulationRunner:
                                         state.polymarket_running = False
                                         logger.info(f"Polymarket simulation completed: {state.simulation_id}, total_rounds={action_data.get('total_rounds')}, total_actions={action_data.get('total_actions')}")
                                     
+                                    _sim_dir = os.path.dirname(os.path.dirname(log_path))
+                                    run_events.emit(
+                                        _sim_dir, state.simulation_id,
+                                        run_events.EVENT_PLATFORM_COMPLETED,
+                                        platform=platform,
+                                        total_rounds=action_data.get("total_rounds"),
+                                        total_actions=action_data.get("total_actions"),
+                                    )
                                     # Check if all enabled platforms are completed
                                     # If only one platform was running, only check that one
                                     # If both platforms were running, both need to be completed
@@ -901,6 +930,11 @@ class SimulationRunner:
                                         state.runner_status = RunnerStatus.COMPLETED
                                         state.completed_at = datetime.now().isoformat()
                                         logger.info(f"All platform simulations completed: {state.simulation_id}")
+                                        run_events.emit(
+                                            _sim_dir, state.simulation_id,
+                                            run_events.EVENT_RUN_COMPLETED,
+                                            source="action_log",
+                                        )
 
                                         # Generate run summary (best-effort)
                                         try:
@@ -985,6 +1019,14 @@ class SimulationRunner:
                                 elif event_type == "round_end":
                                     round_num = action_data.get("round", 0)
                                     simulated_hours = action_data.get("simulated_hours", 0)
+                                    run_events.emit(
+                                        os.path.dirname(os.path.dirname(log_path)),
+                                        state.simulation_id,
+                                        run_events.EVENT_ROUND_COMPLETED,
+                                        platform=platform, round=round_num,
+                                        simulated_hours=simulated_hours,
+                                        total_rounds=state.total_rounds,
+                                    )
 
                                     # Update per-platform independent round and time
                                     if platform == "twitter":
@@ -1011,6 +1053,13 @@ class SimulationRunner:
                                 # the display by a full round-duration).
                                 elif event_type == "round_start":
                                     round_num = action_data.get("round", 0)
+                                    run_events.emit(
+                                        os.path.dirname(os.path.dirname(log_path)),
+                                        state.simulation_id,
+                                        run_events.EVENT_ROUND_STARTED,
+                                        platform=platform, round=round_num,
+                                        total_rounds=state.total_rounds,
+                                    )
                                     if platform == "twitter" and round_num > state.twitter_current_round:
                                         state.twitter_current_round = round_num
                                     elif platform == "reddit" and round_num > state.reddit_current_round:
@@ -1173,6 +1222,10 @@ class SimulationRunner:
         state.polymarket_running = False
         state.completed_at = datetime.now().isoformat()
         cls._save_run_state(state)
+        run_events.emit(
+            os.path.join(cls.RUN_STATE_DIR, simulation_id), simulation_id,
+            run_events.EVENT_RUN_STOPPED,
+        )
         
         # Stop graph memory updater
         if cls._graph_memory_enabled.get(simulation_id, False):

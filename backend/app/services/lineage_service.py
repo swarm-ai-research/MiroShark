@@ -173,8 +173,49 @@ def _load_counterfactual(sim_dir: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _kind_for(state: Optional[Dict[str, Any]], cf: Optional[Dict[str, Any]]) -> str:
-    """Discriminator: ``original`` / ``fork`` / ``counterfactual``."""
+def _load_event_lineage(sim_dir: str) -> Optional[Dict[str, Any]]:
+    """Lineage facts from the unified run-event stream, when present.
+
+    Sims created after the RunEvent stream landed carry their lineage in
+    ``run_events.jsonl`` (``run.created`` / ``run.parent_linked``), making
+    lineage queryable without reconstructing it from ``state.json`` +
+    injection-file heuristics. Returns ``{parent_simulation_id,
+    lineage_kind}`` or ``None`` for pre-stream sims (callers fall back to
+    the legacy artifacts). Never raises.
+    """
+    if not sim_dir:
+        return None
+    try:
+        from .run_events import RunEventLog
+
+        log = RunEventLog(sim_dir)
+        if not log.path.exists():
+            return None
+        projection, _ = log.project()
+        if not projection.simulation_id:
+            return None
+        return {
+            "parent_simulation_id": projection.parent_simulation_id,
+            "lineage_kind": projection.lineage_kind,
+        }
+    except Exception:
+        return None
+
+
+def _kind_for(
+    state: Optional[Dict[str, Any]],
+    cf: Optional[Dict[str, Any]],
+    sim_dir: str = "",
+) -> str:
+    """Discriminator: ``original`` / ``fork`` / ``counterfactual``.
+
+    The run-event stream is authoritative when present; the
+    state.json-parent + injection-file heuristic remains as the
+    fallback for pre-stream sims.
+    """
+    event_lineage = _load_event_lineage(sim_dir)
+    if event_lineage is not None:
+        return _safe_str(event_lineage.get("lineage_kind")) or "original"
     parent = state.get("parent_simulation_id") if isinstance(state, dict) else None
     if not parent:
         return "original"
@@ -229,7 +270,7 @@ def _entry_for_sim(
         "is_public": is_public,
     }
     if include_kind:
-        kind = _kind_for(state, cf)
+        kind = _kind_for(state, cf, sim_dir)
         payload["kind"] = kind
         marker = _build_counterfactual_marker(cf)
         if kind == "counterfactual" and marker is not None:
@@ -293,7 +334,12 @@ def find_children(
         state = _load_state(sim_dir)
         if not isinstance(state, dict):
             continue
-        if _safe_str(state.get("parent_simulation_id")) != parent_id:
+        event_lineage = _load_event_lineage(sim_dir)
+        if event_lineage is not None:
+            candidate_parent = _safe_str(event_lineage.get("parent_simulation_id"))
+        else:
+            candidate_parent = _safe_str(state.get("parent_simulation_id"))
+        if candidate_parent != parent_id:
             continue
         if not bool(state.get("is_public")):
             continue
@@ -357,9 +403,13 @@ def build_lineage_payload(
         state = {}
 
     cf = _load_counterfactual(sim_dir)
-    kind = _kind_for(state, cf)
+    kind = _kind_for(state, cf, sim_dir)
 
-    parent_id = _safe_str(state.get("parent_simulation_id"))
+    event_lineage = _load_event_lineage(sim_dir)
+    if event_lineage is not None:
+        parent_id = _safe_str(event_lineage.get("parent_simulation_id"))
+    else:
+        parent_id = _safe_str(state.get("parent_simulation_id"))
     parent_entry: Optional[Dict[str, Any]] = None
     if parent_id:
         parent_dir = os.path.join(data_dir or "", parent_id)

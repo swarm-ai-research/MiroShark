@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from ..utils.logger import get_logger
 from ..utils.trace_context import TraceContext
 from ..utils.validation import validate_simulation_id
+from . import run_events
 from .entity_reader import EntityReader
 from .wonderwall_profile_generator import WonderwallProfileGenerator
 from .simulation_config_generator import SimulationConfigGenerator
@@ -281,6 +282,13 @@ class SimulationManager:
         )
         
         self._save_simulation_state(state)
+        run_events.emit(
+            self._get_simulation_dir(simulation_id), simulation_id,
+            run_events.EVENT_RUN_CREATED,
+            lineage_kind="original", project_id=project_id, graph_id=graph_id,
+            platforms={"twitter": enable_twitter, "reddit": enable_reddit,
+                       "polymarket": enable_polymarket},
+        )
         logger.info(f"Created simulation: {simulation_id}, project={project_id}, graph={graph_id}")
         
         return state
@@ -325,6 +333,10 @@ class SimulationManager:
         try:
             state.status = SimulationStatus.PREPARING
             self._save_simulation_state(state)
+            run_events.emit(
+                self._get_simulation_dir(simulation_id), simulation_id,
+                run_events.EVENT_PREPARE_STARTED,
+            )
 
             # Pin simulation_id for the whole prep pipeline so every
             # downstream LLM call lands under the same Langfuse session.
@@ -364,6 +376,10 @@ class SimulationManager:
                 state.status = SimulationStatus.FAILED
                 state.error = "No matching entities found, please check if the graph is built correctly"
                 self._save_simulation_state(state)
+                run_events.emit(
+                    sim_dir, simulation_id, run_events.EVENT_RUN_FAILED,
+                    error=state.error, phase="prepare",
+                )
                 return state
             
             # ========== Phase 2: Generate Agent Profiles ==========
@@ -528,6 +544,11 @@ class SimulationManager:
             # Update status
             state.status = SimulationStatus.READY
             self._save_simulation_state(state)
+            run_events.emit(
+                sim_dir, simulation_id, run_events.EVENT_PREPARE_COMPLETED,
+                entities_count=state.entities_count,
+                profiles_count=state.profiles_count,
+            )
             
             logger.info(f"Simulation preparation complete: {simulation_id}, "
                        f"entities={state.entities_count}, profiles={state.profiles_count}")
@@ -541,6 +562,10 @@ class SimulationManager:
             state.status = SimulationStatus.FAILED
             state.error = str(e)
             self._save_simulation_state(state)
+            run_events.emit(
+                self._get_simulation_dir(simulation_id), simulation_id,
+                run_events.EVENT_RUN_FAILED, error=str(e)[:500], phase="prepare",
+            )
             raise
     
     def get_simulation(self, simulation_id: str) -> Optional[SimulationState]:
@@ -656,6 +681,13 @@ class SimulationManager:
             f"'{injection_payload['label']}' at round {trigger_round}"
         )
         self._save_simulation_state(child)
+        run_events.emit(
+            sim_dir, child.simulation_id, run_events.EVENT_RUN_PARENT_LINKED,
+            parent_simulation_id=parent_simulation_id,
+            lineage_kind="counterfactual",
+            trigger_round=injection_payload["trigger_round"],
+            label=injection_payload["label"],
+        )
 
         logger.info(
             f"Counterfactual branch: {child.simulation_id} "
@@ -758,6 +790,12 @@ class SimulationManager:
         )
 
         self._save_simulation_state(state)
+        run_events.emit(
+            self._get_simulation_dir(new_id), new_id,
+            run_events.EVENT_RUN_CREATED,
+            lineage_kind="fork", parent_simulation_id=parent_simulation_id,
+            project_id=parent.project_id, graph_id=parent.graph_id,
+        )
         logger.info(
             f"Forked simulation: {new_id} from parent={parent_simulation_id}, "
             f"diff={config_diff}"

@@ -63,8 +63,19 @@ Schema (v1)::
       },
       "director_events": null | [ { "round": int, "label": str,
                                     "description": str|null } ],
-      "config_reasoning": "LLM rationale for the generated knobs..."
+      "config_reasoning": "LLM rationale for the generated knobs...",
+      "run_events": null | {
+        "event_count": int,          # entries in run_events.jsonl
+        "last_seq": int,             # highest replayed seq
+        "final_status": "completed" | "failed" | ...,
+        "replayable": true           # projection folded without error
+      }
     }
+
+``run_events`` (additive in-place on v1: null for sims that predate the
+unified RunEvent stream) summarizes the append-only lifecycle log the
+runner/manager emit — the artifact that makes a run replayable and
+resumable from events alone.
 
 The frontend renders the blob as a download button + curl snippet;
 ``lineage`` powers the badge on the share / watch pages.
@@ -99,6 +110,11 @@ REQUIRED_KEYS: frozenset[str] = frozenset(
         "config_reasoning",
     }
 )
+
+# ``run_events`` is deliberately NOT in REQUIRED_KEYS: it is an additive,
+# nullable summary of the unified RunEvent stream. Exports produced before
+# the stream existed (and old blobs revalidated today) must keep passing
+# ``validate_blob`` unchanged.
 
 
 def _utc_iso8601() -> str:
@@ -210,8 +226,20 @@ def _build_lineage(state_dict: Dict[str, Any], sim_dir: str) -> Dict[str, Any]:
       second fetch.
     * ``parent_simulation_id`` set + no counterfactual file → ``kind =
       "fork"``. Plain fork via ``/api/simulation/fork``.
+
+    Sims with a unified RunEvent stream carry authoritative lineage in
+    ``run_events.jsonl`` (``run.created`` / ``run.parent_linked``); that
+    is consulted first, the state.json heuristic remains the fallback.
     """
-    parent = state_dict.get("parent_simulation_id")
+    event_summary = _project_run_events(sim_dir)
+    if event_summary is not None and event_summary.get("_projection") is not None:
+        projection = event_summary["_projection"]
+        if projection.parent_simulation_id:
+            parent = projection.parent_simulation_id
+        else:
+            parent = state_dict.get("parent_simulation_id")
+    else:
+        parent = state_dict.get("parent_simulation_id")
     if not parent:
         return {
             "parent_simulation_id": None,
@@ -245,6 +273,46 @@ def _build_lineage(state_dict: Dict[str, Any], sim_dir: str) -> Dict[str, Any]:
         "kind": "counterfactual" if cf_block else "fork",
         "counterfactual": cf_block,
     }
+
+
+def _project_run_events(sim_dir: str) -> Optional[Dict[str, Any]]:
+    """Fold ``run_events.jsonl`` into a summary block (``None`` if absent).
+
+    The private ``_projection`` key carries the live RunProjection for
+    intra-module consumers (lineage); ``_public()`` strips it before the
+    block lands in the export. Never raises — a corrupt stream degrades
+    to ``replayable: False``.
+    """
+    if not sim_dir:
+        return None
+    try:
+        from .run_events import RunEventLog
+
+        log = RunEventLog(sim_dir)
+        if not log.path.exists():
+            return None
+        projection, checkpoint = log.project()
+        return {
+            "event_count": checkpoint.last_seq + 1,
+            "last_seq": checkpoint.last_seq,
+            "final_status": projection.status,
+            "replayable": True,
+            "_projection": projection,
+        }
+    except Exception:
+        return {
+            "event_count": 0,
+            "last_seq": -1,
+            "final_status": "unknown",
+            "replayable": False,
+            "_projection": None,
+        }
+
+
+def _public_run_events(summary: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if summary is None:
+        return None
+    return {k: v for k, v in summary.items() if not k.startswith("_")}
 
 
 def _read_director_events(sim_dir: str) -> Optional[List[Dict[str, Any]]]:
@@ -413,6 +481,7 @@ def build_repro_config(
         "lineage": _build_lineage(state_dict, sim_dir or ""),
         "director_events": _read_director_events(sim_dir or ""),
         "config_reasoning": _safe_str(state_dict.get("config_reasoning")),
+        "run_events": _public_run_events(_project_run_events(sim_dir or "")),
     }
 
 

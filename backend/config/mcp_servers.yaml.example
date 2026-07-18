@@ -1,0 +1,32 @@
+# MCP server manifest — copy to mcp_servers.yaml (or point MCP_SERVERS_CONFIG
+# at it) and set MCP_AGENT_TOOLS_ENABLED=true to grant tools_enabled personas
+# access to these tools during simulation. Oracle seeding (ORACLE_SEED_ENABLED)
+# reads the same manifest for its `server:` names — adding an MCP tool is
+# config-only, no code changes.
+#
+# `transport` follows the fabro-mcp McpTransport shape:
+#   stdio (default) — spawn a local subprocess, JSON-RPC over stdin/stdout
+#   http            — remote MCP server, JSON-RPC over POST (Mcp-Session-Id
+#                     tracked automatically); auth via headers
+# ${ENVVAR} placeholders in env/headers are resolved at load time.
+
+mcp_servers:
+  # Local stdio tool (subprocess per simulation, pooled)
+  - name: web_search
+    command: python
+    args: ["-m", "mcp_web_search"]
+    env:
+      BRAVE_API_KEY: "${BRAVE_KEY}"
+
+  # Remote http tool — e.g. FeedOracle (also usable from template
+  # oracle_tools entries via the same server name)
+  - name: feedoracle_core
+    transport: http
+    url: https://mcp.feedoracle.io/mcp
+    headers:
+      Authorization: "Bearer ${FEEDORACLE_API_KEY}"
+
+  # Example: any third-party MCP server plugs in the same way
+  - name: weather
+    transport: http
+    url: https://mcp.example.com/weather

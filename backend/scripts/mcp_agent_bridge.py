@@ -219,12 +219,12 @@ class MCPAgentBridge:
     """
 
     def __init__(self, registry: Dict[str, Any]):  # MCPServerSpec
-        self._servers: Dict[str, _MCPProcess] = {}
+        self._servers: Dict[str, Any] = {}  # _MCPProcess | MCPHttpSession
         self._registry = registry
         self._lock = threading.Lock()
         atexit.register(self.shutdown)
 
-    def _ensure(self, name: str) -> Optional[_MCPProcess]:
+    def _ensure(self, name: str) -> Optional[Any]:
         if name not in self._registry:
             return None
         with self._lock:
@@ -232,12 +232,21 @@ class MCPAgentBridge:
                 return self._servers[name]
             spec = self._registry[name]
             try:
-                proc = _MCPProcess(
-                    name=name,
-                    command=spec.command,
-                    args=list(spec.args or []),
-                    env=dict(spec.env or {}),
-                )
+                # Transport dispatch (fabro McpTransport pattern): stdio specs
+                # spawn a subprocess, http specs open a shared HTTP session.
+                # Both expose initialize/list_tools/call_tool/shutdown, so
+                # everything below this point is transport-agnostic.
+                if getattr(spec, "transport", "stdio") == "http":
+                    from app.services.agent_mcp_tools import MCPHttpSession
+
+                    proc: Any = MCPHttpSession(spec)
+                else:
+                    proc = _MCPProcess(
+                        name=name,
+                        command=spec.command,
+                        args=list(spec.args or []),
+                        env=dict(spec.env or {}),
+                    )
                 proc.initialize()
                 self._servers[name] = proc
                 return proc

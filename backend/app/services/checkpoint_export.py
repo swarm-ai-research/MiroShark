@@ -165,12 +165,18 @@ def export_checkpoint(
 
 
 def branch_head(simulation_id: str, repo_dir: Path | str) -> Optional[str]:
-    """Current tip of the sim's checkpoint branch, or ``None``."""
+    """Current tip of the sim's checkpoint branch, or ``None``.
 
+    A repo that has never been initialised (no checkpoint taken yet) is the
+    same as "no checkpoints": read paths must not require the bare repo to
+    exist — only :func:`export_checkpoint` creates it.
+    """
+
+    repo = Path(repo_dir)
+    if not (repo / "HEAD").exists():
+        return None
     try:
-        return _git(
-            Path(repo_dir), ["rev-parse", "--verify", "-q", _branch_ref(simulation_id)]
-        )
+        return _git(repo, ["rev-parse", "--verify", "-q", _branch_ref(simulation_id)])
     except subprocess.CalledProcessError:
         return None
 

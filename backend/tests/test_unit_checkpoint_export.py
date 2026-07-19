@@ -186,3 +186,14 @@ def test_checkpoint_route_404_and_409(client, tmp_path):
         "/api/simulation/sim_dddddddddddd/checkpoint", headers=headers
     )
     assert resp.status_code == 409  # nothing snapshot-able yet
+
+
+def test_read_paths_tolerate_missing_repo(tmp_path):
+    """Listing/reading before any checkpoint exists must not require the
+    bare repo — only export creates it. (Found live: GET /checkpoints 500d
+    on a fresh deployment.)"""
+    missing = tmp_path / "never-created.git"
+    assert cx.branch_head(SIM, missing) is None
+    assert cx.list_checkpoints(SIM, missing) == []
+    with pytest.raises(ValueError, match="no checkpoints"):
+        cx.import_checkpoint(SIM, tmp_path / "dest", missing)

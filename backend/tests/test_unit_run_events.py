@@ -372,6 +372,11 @@ def test_sse_route_streams_finished_sim_over_http(tmp_path, monkeypatch):
     sim_dir.mkdir(parents=True)
     _lifecycle(sim_dir, rounds=1)
     monkeypatch.setattr(Config, "WONDERWALL_SIMULATION_DATA_DIR", str(sims_root))
+    # Pin the keyless local-dev posture: with no internal key and DEBUG on,
+    # the anonymous-spectator gate stays open (historic behavior). The gated
+    # posture is covered by test_sse_route_gates_private_sim_for_anonymous.
+    monkeypatch.delenv("MIROSHARK_INTERNAL_KEY", raising=False)
+    monkeypatch.setattr(Config, "DEBUG", True)
 
     from app.api import simulation_bp
 
@@ -400,3 +405,46 @@ def test_sse_route_streams_finished_sim_over_http(tmp_path, monkeypatch):
     bare.mkdir()
     resp3 = client.get("/api/simulation/sim_barebones000/events/stream")
     assert "event: no_stream" in resp3.get_data(as_text=True)
+
+
+def test_sse_route_gates_private_sim_for_anonymous(tmp_path, monkeypatch):
+    """Keyed deployment: anonymous stream of a private sim gets no_stream.
+
+    The spectator exemption lets this route past the blanket internal-key
+    guard (EventSource cannot send headers), so the route itself must gate
+    private sims for callers without the key — and serve keyed callers.
+    """
+    from flask import Flask
+
+    from app.config import Config
+
+    sims_root = tmp_path / "sims"
+    sim_dir = sims_root / SIM
+    sim_dir.mkdir(parents=True)
+    _lifecycle(sim_dir, rounds=1)
+    monkeypatch.setattr(Config, "WONDERWALL_SIMULATION_DATA_DIR", str(sims_root))
+    monkeypatch.setenv("MIROSHARK_INTERNAL_KEY", "test-key-123")
+
+    from app.api import simulation_bp
+
+    app = Flask(__name__)
+    app.register_blueprint(simulation_bp, url_prefix="/api/simulation")
+    client = app.test_client()
+
+    # Anonymous: gated with a clean no_stream event, not the run events.
+    resp = client.get(f"/api/simulation/{SIM}/events/stream")
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/event-stream"
+    body = resp.get_data(as_text=True)
+    assert "no_stream" in body
+    assert "not public" in body
+
+    # Keyed operator: full stream.
+    resp = client.get(
+        f"/api/simulation/{SIM}/events/stream",
+        headers={"x-miroshark-internal-key": "test-key-123"},
+    )
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "no_stream" not in body
+    assert "run.started" in body or "id:" in body

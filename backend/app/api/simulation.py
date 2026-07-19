@@ -3420,6 +3420,29 @@ def get_run_status(simulation_id: str):
         }
     """
     try:
+        # Anonymous spectator gate: this endpoint is exempt from the blanket
+        # internal-key guard so the public watch page can poll it, but the
+        # watch contract ("a private simulation just renders a generic
+        # broadcast page — no live numbers") means anonymous callers only
+        # get real numbers for is_public sims. Keyed operators see all.
+        from ..utils.internal_auth import caller_may_view_private
+        if not caller_may_view_private():
+            _state = SimulationManager().get_simulation(simulation_id)
+            if not _state or not getattr(_state, "is_public", False):
+                return jsonify({
+                    "success": True,
+                    "data": {
+                        "simulation_id": simulation_id,
+                        "runner_status": "idle",
+                        "current_round": 0,
+                        "total_rounds": 0,
+                        "progress_percent": 0,
+                        "twitter_actions_count": 0,
+                        "reddit_actions_count": 0,
+                        "total_actions_count": 0,
+                    }
+                })
+
         run_state = SimulationRunner.get_run_state(simulation_id)
         
         if not run_state:
@@ -3476,6 +3499,22 @@ def stream_run_events(simulation_id: str):
     sim_dir = os.path.join(Config.WONDERWALL_SIMULATION_DATA_DIR, simulation_id)
     if not os.path.isdir(sim_dir):
         return jsonify({"success": False, "error": "Simulation not found"}), 404
+
+    # Anonymous spectator gate (same contract as /run-status): exempt from
+    # the blanket key guard because EventSource cannot send headers, so
+    # anonymous callers only stream is_public sims. A clean ``no_stream``
+    # event (not an HTTP error) stops EventSource reconnect churn and lets
+    # the watch page fall back to its generic broadcast frame.
+    from ..utils.internal_auth import caller_may_view_private
+    if not caller_may_view_private():
+        _state = SimulationManager().get_simulation(simulation_id)
+        if not _state or not getattr(_state, "is_public", False):
+            resp = Response(
+                'event: no_stream\ndata: {"reason": "simulation is not public"}\n\n',
+                mimetype='text/event-stream',
+            )
+            resp.headers['Cache-Control'] = 'no-cache'
+            return resp
 
     last_event_id = request.headers.get('Last-Event-ID')
     if last_event_id is not None:

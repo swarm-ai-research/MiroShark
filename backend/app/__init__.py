@@ -4,6 +4,7 @@ MiroShark Backend - Flask application factory
 
 import hmac
 import os
+import re
 import warnings
 
 # Suppress multiprocessing resource_tracker warnings (from third-party libraries like transformers)
@@ -32,6 +33,13 @@ _DEPLOY_PLATFORM_ENV_VARS = (
 def _is_deployed_environment() -> bool:
     """True when running on a known managed deploy platform (Railway / Cloud Run)."""
     return any(os.environ.get(var) for var in _DEPLOY_PLATFORM_ENV_VARS)
+
+
+# Spectator surface reachable without the internal key; handlers gate on
+# ``is_public`` themselves for anonymous callers.
+_SPECTATOR_PATH_RE = re.compile(
+    r'^/api/simulation/[A-Za-z0-9_-]+/(?:embed-summary|run-status|events/stream)$'
+)
 
 
 def create_app(config_class=Config):
@@ -113,6 +121,18 @@ def create_app(config_class=Config):
         # total_sims is filtered to public+completed in platform_status so an
         # anonymous caller can never read the volume of private/in-flight sims.
         if request.path == '/api/status.json':
+            return
+
+        # Exempt the spectator read surface. The public watch page
+        # (/watch/<sim_id>, itself unprotected) fetches these three GET
+        # endpoints from anonymous browsers — and EventSource cannot send
+        # custom headers, so the blanket key check would kill the SSE fast
+        # path (and did: every watch data call 401'd from 375ef84 until
+        # this exemption). Each handler enforces its own ``is_public`` gate
+        # for anonymous callers (see utils.internal_auth), mirroring the
+        # status.json pattern above: exempt from the blanket check, gated
+        # inside the handler.
+        if request.method == 'GET' and _SPECTATOR_PATH_RE.match(request.path):
             return
 
         # Only protect /api/* routes
